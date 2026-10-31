@@ -1,23 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Plus, Trash2, X } from "lucide-react";
+import { Pencil, Plus, Trash2, X } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "@/hooks/use-toast";
 import { takeNativePhoto } from "@/lib/native";
 import {
   HealthFile, MAX_FILES_PER_PRESCRIPTION, MAX_FILE_BYTES,
-  compressImage, deleteHealthFiles, getHealthFileBlob, imagesToPdf, shareFiles, storeHealthFile,
+  abrirArquivo, compressImage, deleteHealthFiles, getHealthFileBlob, imagesToPdf, rotateImage90, shareFiles, storeHealthFile,
 } from "@/lib/healthFiles";
 import {
-  HealthVisit, PLACE_TYPES, Prescription, RX_FORMS, RX_UNITS, RxItem,
-  loadLocalVisits, pendingCount, refreshVisits, removeVisit, saveVisit,
+  EXAM_STATUS, Exam, HealthDirectory, HealthVisit, Prescription, Procedure, REFERRAL_STATUS, Referral, RX_DOSE_UNITS, RX_FORMS, RX_TOTAL_UNITS, RX_UNITS, RX_VIAS, RxItem,
+  allVisitFiles, loadDirectory, loadLocalVisits, pendingCount, refreshDirectory, refreshVisits, removeVisit, saveDirectory, saveVisit,
 } from "@/lib/healthVisits";
 import { buildMedPrefill, loadLinkedItemIds, rxTitle, type MedPrefill } from "@/lib/healthLink";
+import { LocalField, MedicoField, rotuloCrm } from "./HealthPickers";
 import { isUnlocked, lockNow, markUnlocked, touchActivity, unlockWithBiometric, verifyAccountPassword } from "@/lib/healthLock";
 
 const ACCENT = "#1A1A2E";
 const GREEN = "#1D9E75";
 const RED = "#E24B4A";
+
+const MOTIVOS = ["Dor", "Febre", "Retorno", "Exame de rotina", "Acidente / queda", "Pressão"];
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -38,9 +41,13 @@ function newVisit(): HealthVisit {
     place_type: "",
     place_name: "",
     doctor_name: "",
+    doctor_crm: "",
     reason: "",
     notes: "",
     prescriptions: [],
+    exams: [],
+    referrals: [],
+    procedures: [],
     updated_at: "",
   };
 }
@@ -49,16 +56,76 @@ function newPrescription(n: number): Prescription {
   return { id: crypto.randomUUID(), title: `Receita ${n}`, notes: "", items: [], files: [] };
 }
 
+function newExam(): Exam {
+  return { id: crypto.randomUUID(), name: "", place: "", status: "Pedido", date: "", notes: "", files: [], resultFiles: [] };
+}
+
+function newReferral(): Referral {
+  return { id: crypto.randomUUID(), to: "", place: "", status: "Pendente", date: "", notes: "", files: [] };
+}
+
+function newProcedure(): Procedure {
+  return { id: crypto.randomUUID(), name: "", place: "", date: "", notes: "", files: [] };
+}
+
 function allFiles(v: HealthVisit): HealthFile[] {
-  return v.prescriptions.flatMap((p) => p.files);
+  return allVisitFiles(v);
+}
+
+/** De onde vem o arquivo anexado: uma receita, o pedido ou o resultado de um exame, etc. */
+type FileTarget = { kind: "rx" | "examReq" | "examRes" | "referral" | "procedure"; id: string };
+
+function visitSummary(v: HealthVisit): string {
+  const plural = (n: number, one: string, many: string) => (n > 0 ? `${n} ${n === 1 ? one : many}` : "");
+  const nFiles = allFiles(v).length;
+  return [
+    plural(v.prescriptions.length, "receita", "receitas"),
+    plural(v.exams.length, "exame", "exames"),
+    plural(v.referrals.length, "encaminhamento", "encaminhamentos"),
+    plural(v.procedures.length, "procedimento", "procedimentos"),
+    plural(nFiles, "arquivo", "arquivos"),
+  ].filter(Boolean).join(" · ") || "Sem receitas";
+}
+
+const PLURAIS: Record<string, string> = { comprimido: "comprimidos", "cápsula": "cápsulas", gota: "gotas", ml: "ml", "aplicação": "aplicações", "sachê": "sachês" };
+
+function quantUnid(qtd: string | undefined, unid: string | undefined): string {
+  if (!qtd) return "";
+  const n = parseFloat(qtd.replace(",", "."));
+  const u = unid ? (n > 1 ? PLURAIS[unid] ?? unid : unid) : "";
+  return `${qtd} ${u}`.trim();
+}
+
+/** "3 comprimidos · via oral · 1 vez ao dia" */
+function posologiaTexto(it: RxItem): string {
+  const partes: string[] = [];
+  const dose = quantUnid(it.doseQty, it.doseUnit);
+  if (dose) partes.push(dose);
+  if (it.via) partes.push(`via ${it.via}`);
+  if (it.vezesDia && it.vezesDia > 0) partes.push(`${it.vezesDia} ${it.vezesDia === 1 ? "vez" : "vezes"} ao dia`);
+  return partes.join(" · ");
+}
+
+function totalTexto(it: RxItem): string {
+  return it.totalQty ? `${it.totalQty} ${it.totalUnit || ""}`.trim() : "";
+}
+
+function embalagemTxt(it: RxItem): string {
+  const amount = it.amount && it.amount > 0 ? it.amount : 0;
+  const pack = amount ? `${amount} ${(it.form || "unid.").toLowerCase()}${it.form && amount > 1 ? "s" : ""}` : (it.form || "");
+  return [pack, it.qty.trim()].filter(Boolean).join(" · ");
 }
 
 function itemSummary(it: RxItem): { title: string; sub: string } {
-  const title = rxTitle(it);
-  const amount = it.amount && it.amount > 0 ? it.amount : 0;
-  const pack = amount ? `${amount} ${(it.form || "unid.").toLowerCase()}${it.form && amount > 1 ? "s" : ""}` : (it.form || "");
-  const sub = [pack, it.qty.trim()].filter(Boolean).join(" · ");
-  return { title, sub };
+  return { title: rxTitle(it), sub: [embalagemTxt(it), totalTexto(it), posologiaTexto(it)].filter(Boolean).join(" · ") };
+}
+
+/** As duas linhas de cada remédio na lista de atendimentos. */
+function linhasRemedio(it: RxItem): { linha1: string; linha2: string } {
+  const total = totalTexto(it);
+  const emb = embalagemTxt(it);
+  const pos = posologiaTexto(it);
+  return { linha1: [rxTitle(it), total || emb].filter(Boolean).join(" · "), linha2: pos || (total ? emb : "") };
 }
 
 // ── Tela de bloqueio ──────────────────────────────────
@@ -138,7 +205,7 @@ function LockGate({ email, fs, onUnlocked }: { email: string | null; fs: (n: num
 }
 
 // ── Miniatura de um arquivo ───────────────────────────
-function FileThumb({ file, onOpen, onRemove, fs }: { file: HealthFile; onOpen: () => void; onRemove: () => void; fs: (n: number) => number }) {
+function FileThumb({ file, onOpen, onRemove, onEdit, fs }: { file: HealthFile; onOpen: () => void; onRemove: () => void; onEdit: () => void; fs: (n: number) => number }) {
   const isImage = file.type.startsWith("image/");
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
@@ -160,28 +227,31 @@ function FileThumb({ file, onOpen, onRemove, fs }: { file: HealthFile; onOpen: (
     };
   }, [file.path]);
 
+  const mini: React.CSSProperties = {
+    position: "absolute", top: 5, width: 30, height: 30, borderRadius: "50%", border: "none", background: "rgba(0,0,0,0.7)",
+    color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, zIndex: 2,
+  };
+
   return (
-    <div style={{ position: "relative", width: 84, height: 84, flexShrink: 0 }}>
+    <div style={{ position: "relative", width: 96, height: 96, flexShrink: 0 }}>
       <button onClick={onOpen} aria-label={`Abrir ${file.name}`}
-        style={{ width: 84, height: 84, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", cursor: "pointer", padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 2 }}>
+        style={{ width: 96, height: 96, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", cursor: "pointer", padding: 0, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 2 }}>
         {isImage && src ? (
           <img src={src} alt={file.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
         ) : (
           <>
-            <span style={{ fontSize: 26 }}>{isImage ? (failed ? "🚫" : "⏳") : "📄"}</span>
+            <span style={{ fontSize: 28 }}>{isImage ? (failed ? "🚫" : "⏳") : "📄"}</span>
             <span style={{ fontSize: fs(10), color: "var(--color-text-secondary)", padding: "0 4px", wordBreak: "break-all", maxHeight: 24, overflow: "hidden" }}>
               {failed ? "indisponível" : file.name}
             </span>
           </>
         )}
       </button>
+      <button onClick={onEdit} aria-label="Editar arquivo" style={{ ...mini, left: 5 }}><Pencil size={14} /></button>
+      <button onClick={onRemove} aria-label="Remover arquivo" style={{ ...mini, right: 5 }}><X size={15} /></button>
       {file.pending && (
-        <span title="Ainda não enviado para a nuvem" style={{ position: "absolute", left: 4, bottom: 4, fontSize: 12, background: "rgba(255,255,255,0.9)", borderRadius: 6, padding: "0 3px" }}>⏳</span>
+        <span title="Ainda não enviado para a nuvem" style={{ position: "absolute", left: 5, bottom: 5, fontSize: 12, background: "rgba(255,255,255,0.9)", borderRadius: 6, padding: "0 3px" }}>⏳</span>
       )}
-      <button onClick={onRemove} aria-label="Remover arquivo"
-        style={{ position: "absolute", top: -6, right: -6, width: 26, height: 26, borderRadius: "50%", border: "2px solid var(--color-background-primary)", background: RED, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>
-        <X size={13} />
-      </button>
     </div>
   );
 }
@@ -221,8 +291,12 @@ function FileViewer({ file, onClose, fs }: { file: HealthFile; onClose: () => vo
 
   const openPdf = async () => {
     if (!blob) return;
-    if (Capacitor.isNativePlatform()) { await send(); return; }
-    window.open(URL.createObjectURL(blob), "_blank");
+    const r = await abrirArquivo(blob, file.name);
+    if (r === "sem-leitor") toast({ title: "Sem leitor de PDF", description: "Instale um aplicativo que abre PDF (por exemplo, o Google Drive) ou use o botão Enviar.", variant: "destructive" });
+    if (r === "falhou") {
+      toast({ title: "Não consegui abrir aqui", description: "Escolha o aplicativo na lista que vai aparecer." });
+      await send();
+    }
   };
 
   const btn: React.CSSProperties = { minWidth: 48, height: 48, borderRadius: 12, border: "none", background: "rgba(255,255,255,0.16)", color: "#fff", cursor: "pointer", fontSize: fs(15), fontWeight: 700, padding: "0 12px" };
@@ -245,9 +319,10 @@ function FileViewer({ file, onClose, fs }: { file: HealthFile; onClose: () => vo
           <div style={{ color: "#fff", padding: 30 }}>
             <div style={{ fontSize: 56, marginBottom: 10 }}>📄</div>
             <div style={{ fontSize: fs(15), marginBottom: 16, wordBreak: "break-word" }}>{file.name}</div>
-            <button style={{ ...btn, background: GREEN, minHeight: 52, padding: "0 22px" }} onClick={openPdf} disabled={!blob}>
-              {Capacitor.isNativePlatform() ? "Abrir com… / Enviar" : "Abrir PDF"}
-            </button>
+            <div style={{ display: "flex", gap: 10, maxWidth: 420, margin: "0 auto" }}>
+              <button style={{ ...btn, background: GREEN, minHeight: 54, flex: 1, padding: "0 12px" }} onClick={openPdf} disabled={!blob}>📄 Abrir PDF</button>
+              <button style={{ ...btn, minHeight: 54, flex: 1, padding: "0 12px", border: "1px solid rgba(255,255,255,0.5)", background: "transparent" }} onClick={send} disabled={!blob}>📤 Enviar</button>
+            </div>
           </div>
         )}
       </div>
@@ -257,12 +332,14 @@ function FileViewer({ file, onClose, fs }: { file: HealthFile; onClose: () => vo
 
 // ── Editor de um atendimento ──────────────────────────
 function VisitEditor({
-  initial, isNew, userId, suggestions, scale, onSave, onDelete, onClose, onCreateMedication,
+  initial, isNew, userId, suggestions, dir, onDirChange, scale, onSave, onDelete, onClose, onCreateMedication,
 }: {
   initial: HealthVisit;
   isNew: boolean;
   userId: string;
   suggestions: { doctors: string[]; places: string[]; meds: RxItem[] };
+  dir: HealthDirectory;
+  onDirChange: (d: HealthDirectory) => void;
   scale: number;
   onSave: (v: HealthVisit, removed: HealthFile[]) => Promise<void>;
   onDelete: () => Promise<void>;
@@ -280,8 +357,12 @@ function VisitEditor({
   const [confirm, setConfirm] = useState<{ text: string; yes: () => void } | null>(null);
   const cameraInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const targetRx = useRef(0);
+  const targetFiles = useRef<FileTarget>({ kind: "rx", id: "" });
+  const replaceRef = useRef<string | null>(null);
+  const [fileMenu, setFileMenu] = useState<{ target: FileTarget; file: HealthFile } | null>(null);
+  const [renomear, setRenomear] = useState<{ target: FileTarget; file: HealthFile; texto: string } | null>(null);
   const [openItem, setOpenItem] = useState<string | null>(null);
+  const [openExtra, setOpenExtra] = useState<string | null>(null);
 
   const dirty = JSON.stringify(draft) !== initialJson.current;
 
@@ -336,11 +417,29 @@ function VisitEditor({
     updRx(idx, { items: draft.prescriptions[idx].items.filter((it) => it.id !== itemId) });
 
   // ── anexar ──
-  const processFile = async (rxIdx: number, file: File) => {
-    const rx = draft.prescriptions[rxIdx];
-    if (!rx) return;
-    if (rx.files.length >= MAX_FILES_PER_PRESCRIPTION) {
-      toast({ title: "Limite de arquivos", description: `No máximo ${MAX_FILES_PER_PRESCRIPTION} arquivos por receita.`, variant: "destructive" });
+  const listOf = (t: FileTarget): HealthFile[] => {
+    if (t.kind === "rx") return draft.prescriptions.find((p) => p.id === t.id)?.files ?? [];
+    if (t.kind === "examReq") return draft.exams.find((e) => e.id === t.id)?.files ?? [];
+    if (t.kind === "examRes") return draft.exams.find((e) => e.id === t.id)?.resultFiles ?? [];
+    if (t.kind === "referral") return draft.referrals.find((r) => r.id === t.id)?.files ?? [];
+    return draft.procedures.find((p) => p.id === t.id)?.files ?? [];
+  };
+
+  const mapList = (t: FileTarget, fn: (files: HealthFile[]) => HealthFile[]) =>
+    setDraft((d) => ({
+      ...d,
+      prescriptions: t.kind === "rx" ? d.prescriptions.map((p) => (p.id === t.id ? { ...p, files: fn(p.files) } : p)) : d.prescriptions,
+      exams:
+        t.kind === "examReq" ? d.exams.map((e) => (e.id === t.id ? { ...e, files: fn(e.files) } : e))
+        : t.kind === "examRes" ? d.exams.map((e) => (e.id === t.id ? { ...e, resultFiles: fn(e.resultFiles) } : e))
+        : d.exams,
+      referrals: t.kind === "referral" ? d.referrals.map((r) => (r.id === t.id ? { ...r, files: fn(r.files) } : r)) : d.referrals,
+      procedures: t.kind === "procedure" ? d.procedures.map((p) => (p.id === t.id ? { ...p, files: fn(p.files) } : p)) : d.procedures,
+    }));
+
+  const processFile = async (target: FileTarget, file: File, replaceId?: string) => {
+    if (listOf(target).length >= MAX_FILES_PER_PRESCRIPTION) {
+      toast({ title: "Limite de arquivos", description: `No máximo ${MAX_FILES_PER_PRESCRIPTION} arquivos em cada grupo.`, variant: "destructive" });
       return;
     }
     setBusy(true);
@@ -367,11 +466,11 @@ function VisitEditor({
       }
       const stored = await storeHealthFile(userId, blob, name, type);
       sessionFiles.current.push(stored);
-      setDraft((d) => ({
-        ...d,
-        prescriptions: d.prescriptions.map((p, i) => (i === rxIdx ? { ...p, files: [...p.files, stored] } : p)),
-      }));
-      if (stored.pending) toast({ title: "Guardado no aparelho", description: "Vai para a nuvem quando houver internet." });
+      mapList(target, (files) => (replaceId ? files.map((f) => (f.id === replaceId ? stored : f)) : [...files, stored]));
+      toast({
+        title: stored.pending ? "Guardado no aparelho" : "Anexado",
+        description: stored.pending ? "Vai para a nuvem quando houver internet. Toque em Salvar atendimento." : "Toque em Salvar atendimento para guardar.",
+      });
     } catch {
       toast({ title: "Não consegui anexar o arquivo", variant: "destructive" });
     } finally {
@@ -379,33 +478,65 @@ function VisitEditor({
     }
   };
 
-  const onPickCamera = async (idx: number) => {
+  const onPickCamera = async (target: FileTarget, replaceId?: string) => {
     if (Capacitor.isNativePlatform()) {
       const f = await takeNativePhoto("camera");
-      if (f) await processFile(idx, f);
+      if (f) await processFile(target, f, replaceId);
     } else {
-      targetRx.current = idx;
+      targetFiles.current = target;
+      replaceRef.current = replaceId ?? null;
       cameraInput.current?.click();
     }
   };
 
-  const onPickFile = (idx: number) => {
-    targetRx.current = idx;
+  const onPickFile = (target: FileTarget, replaceId?: string) => {
+    targetFiles.current = target;
+    replaceRef.current = replaceId ?? null;
     fileInput.current?.click();
   };
 
   const onInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     e.target.value = "";
-    for (const f of files) await processFile(targetRx.current, f);
+    let trocar = replaceRef.current ?? undefined;
+    replaceRef.current = null;
+    for (const f of files) {
+      await processFile(targetFiles.current, f, trocar);
+      trocar = undefined; // só o primeiro substitui; os outros entram como novos
+    }
   };
 
-  const removeFile = (rxIdx: number, fileId: string) =>
+  const girar = async (target: FileTarget, file: HealthFile) => {
+    setBusy(true);
+    try {
+      const girada = await rotateImage90(await getHealthFileBlob(file));
+      const nova = await storeHealthFile(userId, girada, file.name, "image/jpeg");
+      sessionFiles.current.push(nova);
+      mapList(target, (files) => files.map((f) => (f.id === file.id ? nova : f)));
+    } catch {
+      toast({ title: "Não consegui girar a foto", description: "Sem internet e sem cópia no aparelho.", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const salvarNome = () => {
+    if (!renomear) return;
+    const r = renomear;
+    let nome = r.texto.trim();
+    if (!nome) return;
+    const ext = r.file.name.match(/\.[A-Za-z0-9]+$/)?.[0] ?? "";
+    if (ext && !/\.[A-Za-z0-9]+$/.test(nome)) nome += ext;
+    mapList(r.target, (files) => files.map((f) => (f.id === r.file.id ? { ...f, name: nome } : f)));
+    setRenomear(null);
+  };
+
+  const removeFile = (target: FileTarget, fileId: string) =>
     setConfirm({
-      text: "Remover este arquivo da receita?",
+      text: "Remover este arquivo?",
       yes: () => {
         setConfirm(null);
-        updRx(rxIdx, { files: draft.prescriptions[rxIdx].files.filter((f) => f.id !== fileId) });
+        mapList(target, (files) => files.filter((f) => f.id !== fileId));
       },
     });
 
@@ -429,6 +560,22 @@ function VisitEditor({
         for (const f of rx.files) items.push({ blob: await getHealthFileBlob(f), name: f.name });
       }
       const r = await shareFiles(items, rx.title || "Receita");
+      if (r === "failed") toast({ title: "Não consegui enviar", variant: "destructive" });
+      if (r === "saved") toast({ title: "Arquivo salvo no aparelho" });
+    } catch {
+      toast({ title: "Não consegui preparar os arquivos", description: "Sem internet e sem cópia no aparelho.", variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendList = async (files: HealthFile[], title: string) => {
+    if (!files.length) return;
+    setBusy(true);
+    try {
+      const items: { blob: Blob; name: string }[] = [];
+      for (const f of files) items.push({ blob: await getHealthFileBlob(f), name: f.name });
+      const r = await shareFiles(items, title);
       if (r === "failed") toast({ title: "Não consegui enviar", variant: "destructive" });
       if (r === "saved") toast({ title: "Arquivo salvo no aparelho" });
     } catch {
@@ -481,9 +628,87 @@ function VisitEditor({
     cursor: "pointer", fontSize: fs(13), fontWeight: 600, color: "var(--color-text-primary)",
   };
 
+  // ── exames, encaminhamentos e procedimentos ──
+  const sectionTitle: React.CSSProperties = { fontSize: fs(15), fontWeight: 700, color: "var(--color-text-primary)", marginBottom: 8 };
+  const addBtn: React.CSSProperties = {
+    width: "100%", minHeight: 52, borderRadius: 14, border: "1.5px dashed var(--color-border-secondary)", background: "transparent",
+    cursor: "pointer", fontSize: fs(14), fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 18,
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+  };
+  const expandedBox: React.CSSProperties = { border: `1.5px solid ${ACCENT}`, borderRadius: 14, padding: 12, marginBottom: 10, background: "var(--color-background-primary)" };
+  const badge = (bg: string, fg: string): React.CSSProperties => ({ fontSize: fs(12), fontWeight: 600, padding: "6px 10px", borderRadius: 20, background: bg, color: fg });
+
+  const patchExam = (id: string, patch: Partial<Exam>) => setDraft((d) => ({ ...d, exams: d.exams.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  const patchReferral = (id: string, patch: Partial<Referral>) => setDraft((d) => ({ ...d, referrals: d.referrals.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+  const patchProcedure = (id: string, patch: Partial<Procedure>) => setDraft((d) => ({ ...d, procedures: d.procedures.map((x) => (x.id === id ? { ...x, ...patch } : x)) }));
+
+  const askConfirm = (text: string, yes: () => void) => setConfirm({ text, yes: () => { setConfirm(null); yes(); } });
+
+  const askDelete = (label: string, yes: () => void) =>
+    setConfirm({ text: `Excluir "${label}" e os arquivos dele?`, yes: () => { setConfirm(null); yes(); } });
+
+  // "Pronto": sem nome e sem mais nada preenchido, descarta; com dados mas sem nome, avisa
+  const closeExtra = (named: boolean, hasOther: boolean, remove: () => void) => {
+    if (named) { setOpenExtra(null); return; }
+    if (!hasOther) { remove(); setOpenExtra(null); return; }
+    toast({ title: "Preencha o nome", variant: "destructive" });
+  };
+
+  const dateField = (value: string, onChange: (v: string) => void) => (
+    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+      <input type="date" value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle} />
+      {value && <button onClick={() => onChange("")} style={{ ...smallBtn, flex: "0 0 auto", padding: "0 12px" }}>Sem data</button>}
+    </div>
+  );
+
+  const statusChips = (options: readonly string[], value: string, onChange: (v: string) => void) => (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+      {options.map((o) => <button key={o} onClick={() => onChange(o)} style={chip(value === o)}>{o}</button>)}
+    </div>
+  );
+
+  const filesBlock = (target: FileTarget, files: HealthFile[], label: string) => (
+    <div style={{ marginBottom: 12 }}>
+      <div style={labelStyle}>{label}</div>
+      {files.length > 0 && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+          {files.map((f) => <FileThumb key={f.id} file={f} fs={fs} onOpen={() => setViewer(f)} onRemove={() => removeFile(target, f.id)} onEdit={() => setFileMenu({ target, file: f })} />)}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={smallBtn} onClick={() => onPickCamera(target)} disabled={busy}>📷 Tirar foto</button>
+        <button style={smallBtn} onClick={() => onPickFile(target)} disabled={busy}>📎 Foto ou PDF</button>
+      </div>
+      {files.length > 0 && (
+        <button style={{ ...smallBtn, width: "100%", marginTop: 8, background: GREEN, color: "#fff", border: "none" }} onClick={() => sendList(files, label)} disabled={busy}>📤 Enviar</button>
+      )}
+    </div>
+  );
+
+  const doneBtn = (onClick: () => void) => (
+    <button onClick={onClick} style={{ width: "100%", minHeight: 48, borderRadius: 12, border: "none", background: ACCENT, color: "#fff", fontSize: fs(14), fontWeight: 700, cursor: "pointer" }}>Pronto</button>
+  );
+
+  const extraRow = (id: string, title: string, sub: string, onEdit: () => void, onDelete: () => void, extra?: React.ReactNode) => (
+    <div key={id} style={{ marginBottom: 8, background: "var(--color-background-secondary)", borderRadius: 12, padding: 8, border: "0.5px solid var(--color-border-tertiary)" }}>
+      <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <div style={{ flex: 1, minWidth: 0, padding: "0 6px" }}>
+          <div style={{ fontSize: fs(14), fontWeight: 600, color: "var(--color-text-primary)", wordBreak: "break-word" }}>{title}</div>
+          {sub && <div style={{ fontSize: fs(12), color: "var(--color-text-secondary)", wordBreak: "break-word" }}>{sub}</div>}
+        </div>
+        <button onClick={onEdit} aria-label={`Editar ${title}`}
+          style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "transparent", cursor: "pointer", fontSize: 18 }}>✏️</button>
+        <button onClick={onDelete} aria-label={`Excluir ${title}`}
+          style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 12, border: "1px solid #F7C1C1", background: "rgba(252,235,235,0.5)", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Trash2 size={18} color={RED} />
+        </button>
+      </div>
+      {extra}
+    </div>
+  );
+
   return (
     <div style={{ opacity: busy ? 0.7 : 1 }}>
-      <datalist id="hv-doctors">{suggestions.doctors.map((d) => <option key={d} value={d} />)}</datalist>
       <datalist id="hv-meds">{suggestions.meds.map((m) => <option key={m.id} value={m.name} />)}</datalist>
       <datalist id="hv-places">{suggestions.places.map((d) => <option key={d} value={d} />)}</datalist>
       <input ref={cameraInput} type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onInputChange} />
@@ -506,22 +731,25 @@ function VisitEditor({
 
       <div style={{ marginBottom: 14 }}>
         <div style={labelStyle}>Onde foi atendido</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-          {PLACE_TYPES.map((p) => (
-            <button key={p} onClick={() => set("place_type", draft.place_type === p ? "" : p)} style={chip(draft.place_type === p)}>{p}</button>
-          ))}
-        </div>
-        <input list="hv-places" value={draft.place_name} onChange={(e) => set("place_name", e.target.value)} placeholder="Nome do local (ex.: UPA Central)" style={inputStyle} />
+        <LocalField type={draft.place_type} name={draft.place_name} dir={dir} fs={fs} askConfirm={askConfirm}
+          onPick={(t, n) => setDraft((d) => ({ ...d, place_type: t, place_name: n }))} onDirChange={onDirChange} />
       </div>
 
       <div style={{ marginBottom: 14 }}>
-        <div style={labelStyle}>Médico(a)</div>
-        <input list="hv-doctors" value={draft.doctor_name} onChange={(e) => set("doctor_name", e.target.value)} placeholder="Nome do médico" style={inputStyle} />
+        <div style={labelStyle}>Médico(a) e CRM</div>
+        <MedicoField name={draft.doctor_name} crm={draft.doctor_crm} dir={dir} fs={fs} askConfirm={askConfirm}
+          onPick={(n, c) => setDraft((d) => ({ ...d, doctor_name: n, doctor_crm: c }))}
+          onCrmChange={(c) => set("doctor_crm", c)} onDirChange={onDirChange} />
       </div>
 
       <div style={{ marginBottom: 14 }}>
         <div style={labelStyle}>Motivo do atendimento</div>
-        <input value={draft.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Por que procurou atendimento?" style={inputStyle} />
+        <input value={draft.reason} onChange={(e) => set("reason", e.target.value)} placeholder="Por que procurou atendimento?" style={{ ...inputStyle, marginBottom: 8 }} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {MOTIVOS.map((m) => (
+            <button key={m} type="button" onClick={() => set("reason", !draft.reason.trim() ? m : draft.reason.includes(m) ? draft.reason : `${draft.reason.trim()}, ${m}`)} style={chip(draft.reason.includes(m))}>{m}</button>
+          ))}
+        </div>
       </div>
 
       <div style={{ marginBottom: 18 }}>
@@ -548,13 +776,13 @@ function VisitEditor({
           {rx.files.length > 0 && (
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
               {rx.files.map((f) => (
-                <FileThumb key={f.id} file={f} fs={fs} onOpen={() => setViewer(f)} onRemove={() => removeFile(idx, f.id)} />
+                <FileThumb key={f.id} file={f} fs={fs} onOpen={() => setViewer(f)} onRemove={() => removeFile({ kind: "rx", id: rx.id }, f.id)} onEdit={() => setFileMenu({ target: { kind: "rx", id: rx.id }, file: f })} />
               ))}
             </div>
           )}
           <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-            <button style={smallBtn} onClick={() => onPickCamera(idx)} disabled={busy}>📷 Tirar foto</button>
-            <button style={smallBtn} onClick={() => onPickFile(idx)} disabled={busy}>📎 Foto ou PDF</button>
+            <button style={smallBtn} onClick={() => onPickCamera({ kind: "rx", id: rx.id })} disabled={busy}>📷 Tirar foto</button>
+            <button style={smallBtn} onClick={() => onPickFile({ kind: "rx", id: rx.id })} disabled={busy}>📎 Foto ou PDF</button>
           </div>
           {rx.files.length > 0 && (
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
@@ -630,6 +858,38 @@ function VisitEditor({
                   <span style={{ fontSize: fs(13), color: "var(--color-text-secondary)" }}>{it.form ? it.form.toLowerCase() + (amount > 1 ? "s" : "") : "embalagem"}</span>
                 </div>
 
+                <div style={labelStyle}>Quantidade total (ex.: 21 comprimidos)</div>
+                <input inputMode="decimal" value={it.totalQty || ""} onChange={(e) => updItem(idx, it.id, { totalQty: e.target.value.replace(/[^0-9.,]/g, "") })} placeholder="Número" style={{ ...inputStyle, width: 120, marginBottom: 8 }} />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  {RX_TOTAL_UNITS.map((u) => (
+                    <button key={u} onClick={() => updItem(idx, it.id, { totalUnit: it.totalUnit === u ? "" : u })} style={chip(it.totalUnit === u)}>{u}</button>
+                  ))}
+                </div>
+
+                <div style={labelStyle}>Como tomar</div>
+                <div style={{ fontSize: fs(12), color: "var(--color-text-secondary)", marginBottom: 4 }}>Quanto por vez</div>
+                <input inputMode="decimal" value={it.doseQty || ""} onChange={(e) => updItem(idx, it.id, { doseQty: e.target.value.replace(/[^0-9.,]/g, "") })} placeholder="Ex.: 3" style={{ ...inputStyle, width: 120, marginBottom: 8 }} />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  {RX_DOSE_UNITS.map((u) => (
+                    <button key={u} onClick={() => updItem(idx, it.id, { doseUnit: it.doseUnit === u ? "" : u })} style={chip(it.doseUnit === u)}>{u}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: fs(12), color: "var(--color-text-secondary)", marginBottom: 4 }}>Via</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+                  {RX_VIAS.map((v) => (
+                    <button key={v} onClick={() => updItem(idx, it.id, { via: it.via === v ? "" : v })} style={chip(it.via === v)}>{v}</button>
+                  ))}
+                </div>
+                <div style={{ fontSize: fs(12), color: "var(--color-text-secondary)", marginBottom: 4 }}>Vezes ao dia</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+                  <button onClick={() => updItem(idx, it.id, { vezesDia: Math.max(0, (it.vezesDia || 0) - 1) })} aria-label="Diminuir"
+                    style={{ width: 48, height: 48, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "transparent", cursor: "pointer", fontSize: fs(22), color: "var(--color-text-primary)" }}>−</button>
+                  <span style={{ minWidth: 44, textAlign: "center", fontSize: fs(20), fontWeight: 700, color: "var(--color-text-primary)" }}>{it.vezesDia && it.vezesDia > 0 ? it.vezesDia : "—"}</span>
+                  <button onClick={() => updItem(idx, it.id, { vezesDia: Math.min(12, (it.vezesDia || 0) + 1) })} aria-label="Aumentar"
+                    style={{ width: 48, height: 48, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "transparent", cursor: "pointer", fontSize: fs(22), color: "var(--color-text-primary)" }}>+</button>
+                  <span style={{ fontSize: fs(13), color: "var(--color-text-secondary)" }}>{it.vezesDia === 1 ? "vez ao dia" : "vezes ao dia"}</span>
+                </div>
+
                 <div style={labelStyle}>Observação (opcional)</div>
                 <input value={it.qty} onChange={(e) => updItem(idx, it.id, { qty: e.target.value })} placeholder="Ex.: 21 comprimidos; 1 a cada 8 horas" style={{ ...inputStyle, marginBottom: 12 }} />
 
@@ -652,6 +912,104 @@ function VisitEditor({
         <Plus size={18} /> Adicionar receita
       </button>
 
+      {/* Exames */}
+      <div style={sectionTitle}>🔬 Exames ({draft.exams.length})</div>
+      {draft.exams.map((e) => openExtra !== e.id ? (
+        extraRow(
+          e.id,
+          e.name.trim() || "Exame sem nome",
+          [e.status, e.date ? fmtDate(e.date) : "", e.place].filter(Boolean).join(" · "),
+          () => setOpenExtra(e.id),
+          () => askDelete(e.name.trim() || "este exame", () => setDraft((d) => ({ ...d, exams: d.exams.filter((x) => x.id !== e.id) }))),
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 8 }}>
+            <span style={badge("#EEF1F6", "#445066")}>📎 pedido: {e.files.length}</span>
+            <span style={e.resultFiles.length ? badge("#E1F5EE", "#085041") : badge("#FAEEDA", "#633806")}>
+              {e.resultFiles.length ? `✅ resultado: ${e.resultFiles.length}` : "⏳ sem resultado"}
+            </span>
+            <button onClick={() => onPickFile({ kind: "examRes", id: e.id })} disabled={busy} style={{ ...smallBtn, flex: "1 1 auto", minHeight: 40 }}>📎 Anexar resultado</button>
+          </div>
+        )
+      ) : (
+        <div key={e.id} style={expandedBox}>
+          <div style={labelStyle}>Nome do exame</div>
+          <input value={e.name} onChange={(ev) => patchExam(e.id, { name: ev.target.value })} placeholder="Ex.: Raio-X do joelho" style={{ ...inputStyle, marginBottom: 12 }} autoFocus={!e.name} />
+          <div style={labelStyle}>Onde fazer (laboratório ou clínica)</div>
+          <input list="hv-places" value={e.place} onChange={(ev) => patchExam(e.id, { place: ev.target.value })} style={{ ...inputStyle, marginBottom: 12 }} />
+          <div style={labelStyle}>Situação</div>
+          {statusChips(EXAM_STATUS, e.status, (v) => patchExam(e.id, { status: v }))}
+          <div style={labelStyle}>Data (agendada ou feita)</div>
+          {dateField(e.date, (v) => patchExam(e.id, { date: v }))}
+          <div style={labelStyle}>Observações (opcional)</div>
+          <input value={e.notes} onChange={(ev) => patchExam(e.id, { notes: ev.target.value })} placeholder="Ex.: ir em jejum de 8 horas" style={{ ...inputStyle, marginBottom: 12 }} />
+          {filesBlock({ kind: "examReq", id: e.id }, e.files, "Pedido do exame (foto ou PDF)")}
+          {filesBlock({ kind: "examRes", id: e.id }, e.resultFiles, "Resultado do exame (foto ou PDF)")}
+          {doneBtn(() => closeExtra(!!e.name.trim(), !!(e.place.trim() || e.notes.trim() || e.date || e.files.length || e.resultFiles.length), () => setDraft((d) => ({ ...d, exams: d.exams.filter((x) => x.id !== e.id) }))))}
+        </div>
+      ))}
+      <button onClick={() => { const e = newExam(); setDraft((d) => ({ ...d, exams: [...d.exams, e] })); setOpenExtra(e.id); }} style={addBtn}>
+        <Plus size={18} /> Adicionar exame
+      </button>
+
+      {/* Encaminhamentos */}
+      <div style={sectionTitle}>➡️ Encaminhamentos ({draft.referrals.length})</div>
+      {draft.referrals.map((r) => openExtra !== r.id ? (
+        extraRow(
+          r.id,
+          `Para: ${r.to.trim() || "(não informado)"}`,
+          [r.status, r.date ? fmtDate(r.date) : "", r.place].filter(Boolean).join(" · "),
+          () => setOpenExtra(r.id),
+          () => askDelete(r.to.trim() || "este encaminhamento", () => setDraft((d) => ({ ...d, referrals: d.referrals.filter((x) => x.id !== r.id) }))),
+          r.files.length > 0 ? <div style={{ marginTop: 8 }}><span style={badge("#EEF1F6", "#445066")}>📎 anexos: {r.files.length}</span></div> : undefined
+        )
+      ) : (
+        <div key={r.id} style={expandedBox}>
+          <div style={labelStyle}>Encaminhado para (especialidade ou médico)</div>
+          <input value={r.to} onChange={(ev) => patchReferral(r.id, { to: ev.target.value })} placeholder="Ex.: Ortopedista" style={{ ...inputStyle, marginBottom: 12 }} autoFocus={!r.to} />
+          <div style={labelStyle}>Onde (clínica ou hospital)</div>
+          <input list="hv-places" value={r.place} onChange={(ev) => patchReferral(r.id, { place: ev.target.value })} style={{ ...inputStyle, marginBottom: 12 }} />
+          <div style={labelStyle}>Situação</div>
+          {statusChips(REFERRAL_STATUS, r.status, (v) => patchReferral(r.id, { status: v }))}
+          <div style={labelStyle}>Data da consulta (se já marcada)</div>
+          {dateField(r.date, (v) => patchReferral(r.id, { date: v }))}
+          <div style={labelStyle}>Observações (opcional)</div>
+          <input value={r.notes} onChange={(ev) => patchReferral(r.id, { notes: ev.target.value })} style={{ ...inputStyle, marginBottom: 12 }} />
+          {filesBlock({ kind: "referral", id: r.id }, r.files, "Guia ou foto do encaminhamento")}
+          {doneBtn(() => closeExtra(!!r.to.trim(), !!(r.place.trim() || r.notes.trim() || r.date || r.files.length), () => setDraft((d) => ({ ...d, referrals: d.referrals.filter((x) => x.id !== r.id) }))))}
+        </div>
+      ))}
+      <button onClick={() => { const r = newReferral(); setDraft((d) => ({ ...d, referrals: [...d.referrals, r] })); setOpenExtra(r.id); }} style={addBtn}>
+        <Plus size={18} /> Adicionar encaminhamento
+      </button>
+
+      {/* Outros procedimentos */}
+      <div style={sectionTitle}>🩹 Outros procedimentos ({draft.procedures.length})</div>
+      {draft.procedures.map((p) => openExtra !== p.id ? (
+        extraRow(
+          p.id,
+          p.name.trim() || "Procedimento sem nome",
+          [p.date ? fmtDate(p.date) : "", p.place].filter(Boolean).join(" · "),
+          () => setOpenExtra(p.id),
+          () => askDelete(p.name.trim() || "este procedimento", () => setDraft((d) => ({ ...d, procedures: d.procedures.filter((x) => x.id !== p.id) }))),
+          p.files.length > 0 ? <div style={{ marginTop: 8 }}><span style={badge("#EEF1F6", "#445066")}>📎 anexos: {p.files.length}</span></div> : undefined
+        )
+      ) : (
+        <div key={p.id} style={expandedBox}>
+          <div style={labelStyle}>Procedimento</div>
+          <input value={p.name} onChange={(ev) => patchProcedure(p.id, { name: ev.target.value })} placeholder="Ex.: Curativo, retirada de pontos" style={{ ...inputStyle, marginBottom: 12 }} autoFocus={!p.name} />
+          <div style={labelStyle}>Onde foi feito</div>
+          <input list="hv-places" value={p.place} onChange={(ev) => patchProcedure(p.id, { place: ev.target.value })} style={{ ...inputStyle, marginBottom: 12 }} />
+          <div style={labelStyle}>Data</div>
+          {dateField(p.date, (v) => patchProcedure(p.id, { date: v }))}
+          <div style={labelStyle}>Observações (opcional)</div>
+          <input value={p.notes} onChange={(ev) => patchProcedure(p.id, { notes: ev.target.value })} style={{ ...inputStyle, marginBottom: 12 }} />
+          {filesBlock({ kind: "procedure", id: p.id }, p.files, "Fotos ou documentos")}
+          {doneBtn(() => closeExtra(!!p.name.trim(), !!(p.place.trim() || p.notes.trim() || p.date || p.files.length), () => setDraft((d) => ({ ...d, procedures: d.procedures.filter((x) => x.id !== p.id) }))))}
+        </div>
+      ))}
+      <button onClick={() => { const p = newProcedure(); setDraft((d) => ({ ...d, procedures: [...d.procedures, p] })); setOpenExtra(p.id); }} style={addBtn}>
+        <Plus size={18} /> Adicionar procedimento
+      </button>
+
       <button onClick={() => save()} disabled={busy}
         style={{ width: "100%", minHeight: 54, borderRadius: 14, border: "none", background: ACCENT, color: "#fff", fontSize: fs(15), fontWeight: 700, cursor: "pointer", marginBottom: 12, opacity: busy ? 0.6 : 1 }}>
         {busy ? "Aguarde…" : "Salvar atendimento"}
@@ -665,6 +1023,37 @@ function VisitEditor({
       )}
 
       {viewer && <FileViewer file={viewer} fs={fs} onClose={() => setViewer(null)} />}
+
+      {fileMenu && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10001, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={() => setFileMenu(null)}>
+          <div style={{ background: "var(--color-background-primary)", borderRadius: "20px 20px 0 0", padding: 16, width: "100%", maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: fs(14), fontWeight: 600, marginBottom: 10, wordBreak: "break-word", color: "var(--color-text-primary)" }}>{fileMenu.file.name}</div>
+            {[
+              { txt: "✏️ Renomear", on: () => setRenomear({ target: fileMenu.target, file: fileMenu.file, texto: fileMenu.file.name }), show: true },
+              { txt: "↻ Girar 90°", on: () => girar(fileMenu.target, fileMenu.file), show: fileMenu.file.type.startsWith("image/") },
+              { txt: "📎 Trocar por outro arquivo", on: () => onPickFile(fileMenu.target, fileMenu.file.id), show: true },
+              { txt: "📷 Trocar por uma nova foto", on: () => onPickCamera(fileMenu.target, fileMenu.file.id), show: true },
+            ].filter((o) => o.show).map((o) => (
+              <button key={o.txt} onClick={() => { setFileMenu(null); o.on(); }}
+                style={{ width: "100%", minHeight: 52, textAlign: "left", padding: "0 14px", borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-primary)", fontSize: fs(15), cursor: "pointer", marginBottom: 8 }}>{o.txt}</button>
+            ))}
+            <button onClick={() => setFileMenu(null)} style={{ width: "100%", minHeight: 46, border: "none", background: "transparent", color: "var(--color-text-secondary)", fontSize: fs(14), cursor: "pointer" }}>Cancelar</button>
+          </div>
+        </div>
+      )}
+
+      {renomear && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10002, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setRenomear(null)}>
+          <div style={{ background: "var(--color-background-primary)", borderRadius: 20, padding: 20, width: "88%", maxWidth: 360 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontSize: fs(15), fontWeight: 600, marginBottom: 10, color: "var(--color-text-primary)" }}>Novo nome do arquivo</div>
+            <input value={renomear.texto} onChange={(e) => setRenomear({ ...renomear, texto: e.target.value })} style={{ ...inputStyle, marginBottom: 14 }} autoFocus />
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => setRenomear(null)} style={{ flex: 1, minHeight: 48, borderRadius: 12, border: "0.5px solid var(--color-border-secondary)", background: "transparent", cursor: "pointer", fontSize: fs(14), color: "var(--color-text-primary)" }}>Cancelar</button>
+              <button onClick={salvarNome} style={{ flex: 1, minHeight: 48, borderRadius: 12, border: "none", background: ACCENT, color: "#fff", fontWeight: 700, cursor: "pointer", fontSize: fs(14) }}>Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirm && (
         <div style={{ position: "fixed", inset: 0, zIndex: 10001, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setConfirm(null)}>
@@ -691,6 +1080,7 @@ export function HealthVisitsView({ scale, onCreateMedication }: { scale: number;
   const [visits, setVisits] = useState<HealthVisit[]>(() => (uid ? loadLocalVisits(uid) : []));
   const [synced, setSynced] = useState<boolean>(() => (uid ? pendingCount(uid) === 0 : true));
   const [editing, setEditing] = useState<{ visit: HealthVisit; isNew: boolean } | null>(null);
+  const [dir, setDir] = useState<HealthDirectory>(() => (uid ? loadDirectory(uid) : { places: [], doctors: [] }));
 
   // Tranca sozinho depois de 2 minutos sem mexer (e ao voltar de outro app)
   useEffect(() => {
@@ -711,6 +1101,8 @@ export function HealthVisitsView({ scale, onCreateMedication }: { scale: number;
     const run = async () => {
       const r = await refreshVisits(uid);
       if (alive) { setVisits(r.visits); setSynced(r.synced); }
+      const d = await refreshDirectory(uid, r.visits);
+      if (alive) setDir(d);
     };
     run();
     window.addEventListener("online", run);
@@ -731,14 +1123,19 @@ export function HealthVisitsView({ scale, onCreateMedication }: { scale: number;
         }
       }
     }
-    return { doctors: uniq(visits.map((v) => v.doctor_name)), places: uniq(visits.map((v) => v.place_name)), meds: Array.from(meds.values()) };
-  }, [visits]);
+    return { doctors: uniq(visits.map((v) => v.doctor_name)), places: uniq([...dir.places.map((p) => p.name), ...visits.flatMap((v) => [v.place_name, ...v.exams.map((e) => e.place), ...v.referrals.map((r) => r.place), ...v.procedures.map((p) => p.place)])]), meds: Array.from(meds.values()) };
+  }, [visits, dir]);
 
   if (!user) return null;
 
   if (!unlocked) {
     return <LockGate email={user.email ?? null} fs={fs} onUnlocked={() => { markUnlocked(); setUnlocked(true); }} />;
   }
+
+  const mudarDir = (d: HealthDirectory) => {
+    setDir(d);
+    void saveDirectory(uid, d);
+  };
 
   const handleSave = async (v: HealthVisit, removed: HealthFile[]) => {
     const list = await saveVisit(uid, v);
@@ -769,6 +1166,8 @@ export function HealthVisitsView({ scale, onCreateMedication }: { scale: number;
           isNew={editing.isNew}
           userId={uid}
           suggestions={suggestions}
+          dir={dir}
+          onDirChange={mudarDir}
           scale={scale}
           onSave={handleSave}
           onDelete={handleDelete}
@@ -804,21 +1203,49 @@ export function HealthVisitsView({ scale, onCreateMedication }: { scale: number;
         </div>
       ) : (
         visits.map((v) => {
-          const nFiles = allFiles(v).length;
+          const summary = visitSummary(v);
+          const waiting = v.exams.filter((e) => e.resultFiles.length === 0).length;
           return (
             <button key={v.id} onClick={() => setEditing({ visit: v, isNew: false })}
               style={{ display: "block", width: "100%", textAlign: "left", background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 16, padding: 14, marginBottom: 10, cursor: "pointer" }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
                 <span style={{ fontSize: fs(15), fontWeight: 700, color: "var(--color-text-primary)" }}>{fmtDate(v.visit_date)}</span>
                 <span style={{ fontSize: fs(12), color: "var(--color-text-secondary)" }}>
-                  {v.prescriptions.length} {v.prescriptions.length === 1 ? "receita" : "receitas"}{nFiles > 0 ? ` · ${nFiles} ${nFiles === 1 ? "arquivo" : "arquivos"}` : ""}
+                  {summary}
                 </span>
               </div>
               <div style={{ fontSize: fs(14), color: "var(--color-text-primary)", wordBreak: "break-word" }}>
                 {[v.place_type, v.place_name].filter(Boolean).join(" · ") || "Local não informado"}
               </div>
-              {v.doctor_name && <div style={{ fontSize: fs(13), color: "var(--color-text-secondary)", marginTop: 2 }}>Dr(a). {v.doctor_name}</div>}
+              {v.doctor_name && <div style={{ fontSize: fs(13), color: "var(--color-text-secondary)", marginTop: 2 }}>Dr(a). {v.doctor_name}{v.doctor_crm ? ` · ${rotuloCrm(v.doctor_crm)}` : ""}</div>}
               {v.reason && <div style={{ fontSize: fs(13), color: "var(--color-text-secondary)", marginTop: 2, wordBreak: "break-word" }}>{v.reason}</div>}
+              {(() => {
+                const itens = v.prescriptions.flatMap((pr) => pr.items).filter((it) => it.name.trim());
+                if (itens.length === 0) return null;
+                return (
+                  <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", marginTop: 10, paddingTop: 10 }}>
+                    {itens.map((it) => {
+                      const l = linhasRemedio(it);
+                      return (
+                        <div key={it.id} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                          <span style={{ fontSize: fs(16) }}>💊</span>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: fs(14), fontWeight: 600, color: "var(--color-text-primary)", wordBreak: "break-word" }}>{l.linha1}</div>
+                            {l.linha2 && <div style={{ fontSize: fs(13), color: "var(--color-text-secondary)", wordBreak: "break-word" }}>{l.linha2}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+              {waiting > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  <span style={{ fontSize: fs(12), fontWeight: 600, padding: "4px 10px", borderRadius: 20, background: "#FAEEDA", color: "#633806" }}>
+                    ⏳ {waiting} {waiting === 1 ? "exame sem resultado" : "exames sem resultado"}
+                  </span>
+                </div>
+              )}
             </button>
           );
         })

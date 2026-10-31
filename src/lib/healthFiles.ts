@@ -1,4 +1,4 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { supabase } from "@/integrations/supabase/client";
@@ -296,4 +296,56 @@ export async function imagesToPdf(blobs: Blob[]): Promise<Blob> {
     imgs.push({ bytes: new Uint8Array(await b.arrayBuffer()), w, h });
   }
   return buildPdfFromJpegs(imgs);
+}
+
+// ── Girar a foto 90° (para a receita fotografada de lado) ──
+export async function rotateImage90(blob: Blob): Promise<Blob> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("Imagem inválida"));
+      i.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalHeight;
+    canvas.height = img.naturalWidth;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Sem canvas");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.translate(canvas.width, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(img, 0, 0);
+    const out = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", 0.85));
+    if (!out) throw new Error("Falha ao girar a foto");
+    return out;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+// ── Abrir o arquivo no leitor do celular (PDF) ──
+const FileOpener = registerPlugin<{ open(o: { path: string; mimeType?: string }): Promise<void> }>("FileOpener");
+
+/** "aberto" = abriu; "sem-leitor" = não há app de PDF; "falhou" = não deu (ex.: APK antigo, sem o plugin). */
+export async function abrirArquivo(blob: Blob, name: string): Promise<"aberto" | "sem-leitor" | "falhou"> {
+  if (!Capacitor.isNativePlatform()) {
+    window.open(URL.createObjectURL(blob), "_blank");
+    return "aberto";
+  }
+  try {
+    const data = await blobToBase64(blob);
+    const written = await Filesystem.writeFile({
+      path: `abrir-${Date.now()}-${safeName(name)}`,
+      data,
+      directory: Directory.Cache,
+    });
+    await FileOpener.open({ path: written.uri, mimeType: blob.type || "application/pdf" });
+    return "aberto";
+  } catch (err: any) {
+    const msg = String(err?.message || err || "").toLowerCase();
+    return msg.includes("nenhum aplicativo") ? "sem-leitor" : "falhou";
+  }
 }

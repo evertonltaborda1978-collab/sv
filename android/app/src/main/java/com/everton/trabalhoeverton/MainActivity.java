@@ -33,6 +33,7 @@ public class MainActivity extends BridgeActivity {
         // assim que o Capacitor exige que plugins customizados sejam
         // ligados ao app.
         registerPlugin(AlarmPlugin.class);
+        registerPlugin(FileOpenerPlugin.class);
         super.onCreate(savedInstanceState);
         // Impede que a configuração de "Tamanho da fonte" do próprio Android
         // (Configurações > Tela > Tamanho da fonte) deixe o texto do app
