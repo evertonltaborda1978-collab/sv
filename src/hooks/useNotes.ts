@@ -549,7 +549,15 @@ export function useNotes() {
             if (!delErr) savePendingDeletes(user.id, loadPendingDeletes(user.id).filter((x) => x !== note.id));
           } catch {}
         } else if (!cur || cur === note) {
-          setNotesAndRef((prev) => prev.map((n) => (n.id === note.id ? { ...n, sincronizado: true } : n)));
+          // O banco troca "atualizada em" pela hora dele ao salvar (trigger). Se a nota
+          // daqui ficasse com a data antiga, a próxima atualização da lista acharia que
+          // o servidor tem algo mais novo e baixaria de novo o texto (com as fotos) da
+          // nota que acabou de ser enviada. Por isso guarda a data que o servidor gravou.
+          const dataServidor = novaData ? new Date(novaData) : null;
+          const dataValida = dataServidor && !isNaN(dataServidor.getTime()) ? dataServidor : null;
+          setNotesAndRef((prev) => prev.map((n) => (
+            n.id === note.id ? { ...n, sincronizado: true, ...(dataValida ? { updatedAt: dataValida } : {}) } : n
+          )));
           pinIntentRef.current.delete(note.id);
         } else if (!cur.sincronizado) {
           again = true; // mudou durante o envio: fica pendente e vai de novo
@@ -613,13 +621,27 @@ export function useNotes() {
     const ids = loadPendingDeletes(user.id);
     if (ids.length === 0) return [];
     const restantes: string[] = [];
-    for (const id of ids) {
+    const apagarUma = async (id: string) => {
       try {
         const { error } = await supabase.from("notes").delete().eq("id", id);
         if (error) restantes.push(id);
       } catch {
         restantes.push(id);
       }
+    };
+    // Em lotes de até 100: esvaziar a lixeira vira 1 requisição em vez de 1 por nota.
+    // Se o lote falhar (ex.: um id inválido), tenta uma a uma para uma nota ruim
+    // não travar as outras.
+    for (let i = 0; i < ids.length; i += 100) {
+      const lote = ids.slice(i, i + 100);
+      if (!navigator.onLine) { restantes.push(...lote); continue; }
+      if (lote.length > 1) {
+        try {
+          const { error } = await supabase.from("notes").delete().in("id", lote);
+          if (!error) continue;
+        } catch { /* cai para uma a uma */ }
+      }
+      for (const id of lote) await apagarUma(id);
     }
     savePendingDeletes(user.id, restantes);
     return ids;
@@ -937,6 +959,8 @@ export function useNotes() {
 
       // Sempre cria a nota localmente primeiro, independente de internet/sessão.
       setNotesAndRef((prev) => [note, ...prev]);
+      // O aviso em tempo real desta própria criação não precisa disparar uma atualização da lista.
+      markSelfModified(newId, 15000);
 
       // Sem usuário autenticado ainda (ex: offline na primeira carga) — mantém
       // a nota local; ela será sincronizada quando a sessão/conexão voltar.
@@ -960,7 +984,7 @@ export function useNotes() {
             is_pinned: false,
             sincronizado: true,
           })
-          .select()
+          .select("created_at, updated_at") // só as datas: o texto e as fotos acabaram de subir daqui
           .single();
 
         if (data) {
@@ -975,7 +999,7 @@ export function useNotes() {
         return note;
       }
     },
-    [user]
+    [user, markSelfModified]
   );
 
   // Soft delete — move to trash
