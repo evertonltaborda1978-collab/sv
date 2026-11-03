@@ -23,6 +23,9 @@ import { useDeviceLocations, reverseGeocodeFetch } from "@/hooks/useDeviceLocati
 import { useVersionCheck } from "@/hooks/useVersionCheck";
 import { APP_VERSION, forceUpdateApp } from "@/lib/appVersion";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLicense } from "@/hooks/useLicense";
+import { PixDialog } from "@/components/PixSupport";
+import { APP_NAME, registerDevice } from "@/lib/license";
 import { toast } from "@/hooks/use-toast";
 import { syncNativeAlarms, type NativeAlarmReminder } from "@/lib/nativeAlarm";
 import type { Medication } from "@/lib/medicationTypes";
@@ -66,8 +69,47 @@ const Index = () => {
   const { loading: notasCarregando, notes, addNote, deleteNote, restoreNote, permanentDeleteNote, emptyTrash, updateNote, setNoteReminder, togglePinNote, reorderPinnedNote, lockNoteWithPin, unlockNoteWithPin, verifyNotePin, syncStatus, unsyncedCount, lastSyncError, draftCount, exportBackup, importBackup, shouldRemindBackup, reminderAlert, dismissReminderAlert, snoozeReminderAlert, trashedNotes, refreshNotes } = useNotes();
   const { appointments, trashedAppointments, addAppointment, updateAppointment, deleteAppointment, restoreAppointment, permanentDeleteAppointment, emptyAppointmentTrash, activeAlert, dismissAlert, snoozeAlert, fetchAppointments } = useAppointments();
   const { medicationAlert, dismissMedicationAlert, snoozeMedicationAlert } = useMedicationAlerts();
-  const { user, signOut, permissions, isAdmin } = useAuth();
+  const { user, signOut, permissions: basePermissions } = useAuth();
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showPix, setShowPix] = useState(false);
+
+  // Licença (SV Gerenciador): define quem é administrador e quais módulos
+  // (Saúde, Segurança, Agenda) estão liberados para esta conta.
+  const lic = useLicense();
+  const isAdmin = lic.isAdmin;
+  const licModules = lic.license && !lic.license.is_admin ? lic.license.modules : null;
+  const permissions = licModules
+    ? {
+        ...basePermissions,
+        medication: basePermissions.medication !== false && licModules.saude,
+        devices: basePermissions.devices !== false && licModules.seguranca,
+        location: basePermissions.location !== false && licModules.seguranca,
+        calendar: basePermissions.calendar !== false && licModules.agenda,
+      }
+    : basePermissions;
+
+  // Conta bloqueada, em espera ou sem licença: encerra a sessão.
+  // Registra o aparelho (contador de dispositivos / último acesso) uma vez por abertura.
+  const deviceRegisteredRef = useRef(false);
+  useEffect(() => {
+    const l = lic.license;
+    if (!l || l.is_admin) {
+      if (l?.is_admin && !deviceRegisteredRef.current && navigator.onLine) {
+        deviceRegisteredRef.current = true;
+        void registerDevice();
+      }
+      return;
+    }
+    if (l.status !== "active") {
+      void signOut();
+      return;
+    }
+    if (!deviceRegisteredRef.current && navigator.onLine) {
+      deviceRegisteredRef.current = true;
+      void registerDevice();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lic.license]);
   const { currentDevice, fetchDevices } = useDeviceTracking();
   const { recordLocation } = useDeviceLocations();
   const [showLabelModal, setShowLabelModal] = useState(false);
@@ -607,6 +649,16 @@ const Index = () => {
                       <Upload size={15} /> Importar backup
                     </button>
                     <input ref={importRef} type="file" accept=".json" className="hidden" onChange={handleImportBackupFile} />
+                    <button
+                      onClick={() => { setShowBackupMenu(false); setShowPix(true); }}
+                      className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium hover:bg-gray-50 transition-colors"
+                      style={{ color: "#1A1A2E" }}
+                    >
+                      <span aria-hidden style={{ fontSize: 14 }}>💚</span> Apoiar via PIX
+                    </button>
+                    <p className="text-center text-[10px] pt-1" style={{ color: "#9E9E9E" }}>
+                      {APP_NAME} · {APP_VERSION}
+                    </p>
                   </div>
                 )}
 
@@ -686,6 +738,7 @@ const Index = () => {
           <AdminPanel onClose={() => setShowAdmin(false)} />
         </div>
       )}
+      <PixDialog open={showPix} onClose={() => setShowPix(false)} />
       {/* Bottom Navigation */}
       <BottomNav active={tab} onChange={changeTab} permissions={permissions} />
       <SnoozeAlert

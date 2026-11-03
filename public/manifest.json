@@ -1,19 +1,20 @@
 {
   "name": "Secretária Virtual",
   "short_name": "Secretária",
-  "start_url": "/",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "background_color": "#F7F5F2",
   "theme_color": "#1A1A2E",
   "icons": [
     {
-      "src": "/notepad-icon.svg",
+      "src": "notepad-icon.svg",
       "sizes": "any",
       "type": "image/svg+xml"
     }
   ],
   "share_target": {
-    "action": "/share",
+    "action": "./share",
     "method": "GET",
     "params": {
       "title": "title",

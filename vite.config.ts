@@ -8,7 +8,7 @@ import { VitePWA } from "vite-plugin-pwa";
 export default defineConfig(({ mode }) => {
   // Build normal (dev local / Capacitor / Lovable) usa raiz "/".
   // Build "ghpages" usa a subpasta do repositório no GitHub Pages.
-  const base = mode === "ghpages" ? "/trabalhoeverton/" : "/";
+  const base = mode === "ghpages" ? "/sv/" : "/";
 
   return {
   base,

@@ -1,319 +1,371 @@
-import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
-import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
-import { Check, X, Trash2, ShieldCheck, ArrowLeft, ChevronDown, ChevronUp } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLicense } from "@/hooks/useLicense";
+import {
+  APP_NAME,
+  APP_URL,
+  MODULE_LABELS,
+  adminGenerateKey,
+  adminList,
+  adminSetStatus,
+  type LicenseRow,
+  type Modules,
+} from "@/lib/license";
 
-type ProfileStatus = "pending" | "approved" | "rejected";
+const ALERT_FLAG = "sv_admin_alert_shown";
 
-type FamilyLinkRow = {
-  id: string;
-  owner_id: string;
-  viewer_id: string;
-  owner_label: string;
-  status: "pending" | "accepted" | "declined" | "revoked";
+const STATUS_STYLE: Record<LicenseRow["status"], { label: string; cls: string }> = {
+  active: { label: "Ativo", cls: "bg-green-500/15 text-green-700 dark:text-green-400" },
+  pending: { label: "Pendente", cls: "bg-yellow-500/20 text-yellow-700 dark:text-yellow-300" },
+  blocked: { label: "Bloqueado", cls: "bg-red-500/15 text-red-700 dark:text-red-400" },
+  on_hold: { label: "Em espera", cls: "bg-slate-500/20 text-slate-700 dark:text-slate-300" },
 };
 
-type Permissions = {
-  calendar: boolean;
-  fuel: boolean;
-  medication: boolean;
-  weather: boolean;
-  location: boolean;
-  devices: boolean;
-  turno: boolean;
-};
+const fmt = (iso: string | null) =>
+  iso
+    ? new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
+    : "Nunca";
 
-type Profile = {
-  id: string;
-  email: string | null;
-  full_name: string | null;
-  status: ProfileStatus;
-  is_admin: boolean;
-  permissions: Permissions | null;
-  created_at: string;
-};
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
-const statusLabel: Record<ProfileStatus, string> = {
-  pending: "Pendente",
-  approved: "Aprovado",
-  rejected: "Recusado",
-};
+export default function AdminPanel({ onClose }: { onClose: () => void }) {
+  const { loading: licLoading, isAdmin } = useLicense();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
-const statusColor: Record<ProfileStatus, string> = {
-  pending: "#F9A825",
-  approved: "#43A047",
-  rejected: "#E53935",
-};
+  const [rows, setRows] = useState<LicenseRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [showAlert, setShowAlert] = useState(false);
 
-const PERMISSION_LABELS: { key: keyof Permissions; label: string }[] = [
-  { key: "turno", label: "Relatórios de Turno (Turno, Tombador, Rebobinadeira, Linha de Bobinas)" },
-  { key: "calendar", label: "Agenda" },
-  { key: "weather", label: "Tempo" },
-  { key: "location", label: "Localização" },
-  { key: "devices", label: "Segurança / Dispositivos" },
-  { key: "fuel", label: "Combustível" },
-  { key: "medication", label: "Saúde" },
-];
+  // modal de chave
+  const [target, setTarget] = useState<LicenseRow | null>(null);
+  const [mods, setMods] = useState<Modules>({ saude: false, seguranca: false, agenda: false });
+  const [generated, setGenerated] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [genBusy, setGenBusy] = useState(false);
 
-const DEFAULT_PERMISSIONS: Permissions = {
-  calendar: true,
-  fuel: true,
-  medication: true,
-  weather: true,
-  location: true,
-  devices: true,
-  turno: true,
-};
+  const awaiting = useMemo(
+    () => rows.filter((r) => r.status === "pending" && !r.key_generated_at),
+    [rows],
+  );
 
-export default function AdminPanel({ onClose }: { onClose?: () => void }) {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const { toast } = useToast();
-  // Quando aberto por cima do app (Index), "voltar" só fecha a tela;
-  // aberto pela rota /admin, navega de volta pro início.
-  const goBack = () => (onClose ? onClose() : navigate("/"));
-  const [checking, setChecking] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [profiles, setProfiles] = useState<Profile[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  // Pedidos de acompanhar a saúde (por pessoa). Só valem depois que a pessoa aceita no app dela.
-  const [familyLinks, setFamilyLinks] = useState<Record<string, FamilyLinkRow>>({});
-
-  const loadProfiles = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await (supabase as any)
-      .from("profiles")
-      .select("*")
-      .order("status", { ascending: true })
-      .order("created_at", { ascending: false });
-    if (!error && data) setProfiles(data as Profile[]);
-    setLoading(false);
-  };
-
-  const loadFamily = async (adminId: string) => {
-    const { data } = await (supabase as any).from("family_links").select("*").eq("viewer_id", adminId);
-    const map: Record<string, FamilyLinkRow> = {};
-    for (const row of (data || []) as FamilyLinkRow[]) map[row.owner_id] = row;
-    setFamilyLinks(map);
-  };
-
-  const askFamily = async (p: Profile) => {
-    const { error } = await (supabase as any).rpc("family_request", { p_owner: p.id });
-    if (error) {
-      toast({ title: "Não foi possível pedir", description: error.message, variant: "destructive" });
-      return;
+    setError("");
+    try {
+      const data = await adminList();
+      setRows(data);
+      const waiting = data.filter((r) => r.status === "pending" && !r.key_generated_at).length;
+      if (waiting > 0 && !sessionStorage.getItem(ALERT_FLAG)) {
+        sessionStorage.setItem(ALERT_FLAG, "1");
+        setShowAlert(true);
+      }
+    } catch (e: any) {
+      setError(e?.message ?? "Não foi possível carregar os clientes.");
+    } finally {
+      setLoading(false);
     }
-    toast({ title: "Pedido enviado", description: "A pessoa precisa aceitar no app dela." });
-    if (user) loadFamily(user.id);
-  };
-
-  const stopFamily = async (link: FamilyLinkRow) => {
-    const { error } = await (supabase as any).rpc("family_respond", { p_link: link.id, p_status: "revoked" });
-    if (error) {
-      toast({ title: "Erro", description: error.message, variant: "destructive" });
-      return;
-    }
-    toast({ title: link.status === "pending" ? "Pedido cancelado" : "Você parou de acompanhar" });
-    if (user) loadFamily(user.id);
-  };
+  }, []);
 
   useEffect(() => {
-    const check = async () => {
-      if (!user) {
-        goBack();
-        return;
-      }
-      const { data } = await (supabase as any)
-        .from("profiles")
-        .select("is_admin")
-        .eq("id", user.id)
-        .maybeSingle();
-
-      if (!data?.is_admin) {
-        toast({
-          title: "Acesso restrito",
-          description: "Só o administrador pode ver esta página.",
-          variant: "destructive",
-        });
-        goBack();
-        return;
-      }
-      setIsAdmin(true);
-      setChecking(false);
-      loadProfiles();
-      loadFamily(user.id);
-    };
-    check();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
-
-  const updateStatus = async (id: string, status: "approved" | "rejected") => {
-    const { error } = await (supabase as any).from("profiles").update({ status }).eq("id", id);
-    if (error) {
-      toast({ title: "Erro", description: error.message, variant: "destructive" });
+    if (licLoading) return;
+    if (!isAdmin) {
+      closeRef.current();
       return;
     }
-    toast({ title: status === "approved" ? "Usuário aprovado" : "Acesso recusado" });
-    loadProfiles();
+    load();
+  }, [licLoading, isAdmin, load]);
+
+  const openKeyModal = (r: LicenseRow) => {
+    setTarget(r);
+    setMods({ ...r.modules });
+    setGenerated("");
+    setCopied(false);
   };
 
-  const deleteProfile = async (id: string) => {
-    if (!confirm("Excluir este usuário de vez? A conta será apagada e o email poderá ser cadastrado de novo.")) return;
-    // Apaga a conta de login inteira (e o registro de aprovação junto),
-    // por uma função segura do banco que só o administrador consegue usar.
-    const { error } = await (supabase as any).rpc("admin_delete_user", { target: id });
-    if (error) {
-      toast({ title: "Erro", description: error.message, variant: "destructive" });
-      return;
+  const closeKeyModal = () => {
+    setTarget(null);
+    setGenerated("");
+    load();
+  };
+
+  const generate = async () => {
+    if (!target) return;
+    setGenBusy(true);
+    setError("");
+    try {
+      setGenerated(await adminGenerateKey(target.id, mods));
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao gerar a chave.");
+    } finally {
+      setGenBusy(false);
     }
-    toast({ title: "Usuário excluído" });
-    loadProfiles();
   };
 
-  const togglePermission = async (p: Profile, key: keyof Permissions) => {
-    const current = { ...DEFAULT_PERMISSIONS, ...(p.permissions || {}) };
-    const updated = { ...current, [key]: !current[key] };
-    // Atualiza a tela na hora, sem esperar o servidor confirmar
-    setProfiles((prev) => prev.map((row) => (row.id === p.id ? { ...row, permissions: updated } : row)));
-    const { error } = await (supabase as any).from("profiles").update({ permissions: updated }).eq("id", p.id);
-    if (error) {
-      toast({ title: "Erro ao salvar permissão", description: error.message, variant: "destructive" });
-      loadProfiles();
+  const mailtoHref = () => {
+    if (!target || !generated) return "#";
+    const subject = `Sua chave de ativação do ${APP_NAME}`;
+    const body =
+      `Olá, ${target.name.split(" ")[0]}!\n\n` +
+      `Seu acesso ao ${APP_NAME} foi liberado.\n\n` +
+      `Chave de ativação: ${generated}\n\n` +
+      `Como ativar:\n` +
+      `1. Abra ${APP_URL}\n` +
+      `2. Toque em "Ativar"\n` +
+      `3. Digite seu e-mail (${target.email}) e a chave acima\n` +
+      `4. Crie sua senha definitiva\n\n` +
+      `A chave só funciona uma vez.`;
+    return `mailto:${encodeURIComponent(target.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  };
+
+  const changeStatus = async (r: LicenseRow, action: "block" | "unblock" | "hold") => {
+    setBusyId(r.id);
+    setError("");
+    try {
+      await adminSetStatus(r.id, action);
+      await load();
+    } catch (e: any) {
+      setError(e?.message ?? "Erro ao atualizar.");
+    } finally {
+      setBusyId(null);
     }
   };
 
-  if (checking) return <div className="min-h-screen bg-background" />;
-  if (!isAdmin) return null;
+  if (licLoading || (!isAdmin && !error)) {
+    return <div className="p-6 text-center text-muted-foreground">Carregando...</div>;
+  }
+
+  const btn = "rounded-md border border-border px-2.5 py-1.5 text-xs font-medium disabled:opacity-50";
 
   return (
     <div
-      className="min-h-screen bg-background px-4 py-6"
-      style={{ paddingTop: "calc(env(safe-area-inset-top) + 24px)" }}
+      className="min-h-screen bg-background text-foreground"
+      style={{ paddingTop: "env(safe-area-inset-top)" }}
     >
-      <div className="max-w-lg mx-auto space-y-4">
-        <div className="flex items-center gap-2">
-          <button onClick={goBack} className="p-1 rounded-full hover:bg-black/5">
-            <ArrowLeft size={18} />
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div>
+          <h1 className="text-lg font-semibold">Painel — {APP_NAME}</h1>
+          <p className="text-xs text-muted-foreground">{rows.length} cliente(s)</p>
+        </div>
+        <div className="flex gap-2">
+          <button className={btn} onClick={load} disabled={loading}>
+            {loading ? "Atualizando..." : "Atualizar"}
           </button>
-          <h1 className="text-lg font-bold flex items-center gap-1.5">
-            <ShieldCheck size={18} /> Administração de usuários
-          </h1>
+          <button className={btn} onClick={onClose}>Fechar</button>
         </div>
+      </header>
 
-        {loading && <p className="text-sm text-muted-foreground">Carregando...</p>}
+      {error && (
+        <p role="alert" className="m-4 rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400">
+          {error}
+        </p>
+      )}
 
-        {!loading && profiles.length === 0 && (
-          <p className="text-sm text-muted-foreground">Nenhum usuário cadastrado ainda.</p>
-        )}
-
-        <div className="space-y-2">
-          {profiles.map((p) => {
-            const perms = { ...DEFAULT_PERMISSIONS, ...(p.permissions || {}) };
-            const isExpanded = expandedId === p.id;
-            return (
-              <div
-                key={p.id}
-                className="rounded-xl border p-3 space-y-2"
-                style={{ borderColor: "#EBEBEB" }}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold truncate">{p.full_name || "(sem nome)"}</p>
-                    <p className="text-xs text-muted-foreground truncate">{p.email}</p>
-                    <span className="text-[10px] font-bold" style={{ color: statusColor[p.status] }}>
-                      {statusLabel[p.status]}
-                      {p.is_admin ? " · Admin" : ""}
+      <div className="overflow-x-auto p-4">
+        <table className="w-full min-w-[820px] text-left text-sm">
+          <thead className="text-xs text-muted-foreground">
+            <tr className="border-b border-border">
+              <th className="px-2 py-2 font-medium">Cliente</th>
+              <th className="px-2 py-2 font-medium">Status</th>
+              <th className="px-2 py-2 font-medium">Módulos</th>
+              <th className="px-2 py-2 font-medium">Dispositivos</th>
+              <th className="px-2 py-2 font-medium">Último acesso</th>
+              <th className="px-2 py-2 font-medium">Ações</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const st = STATUS_STYLE[r.status];
+              const keySent = !!r.key_generated_at && !r.key_used_at;
+              const hasKey = !!r.key_generated_at;
+              const isBusy = busyId === r.id;
+              return (
+                <tr key={r.id} className="border-b border-border align-top">
+                  <td className="px-2 py-3">
+                    <div className="font-medium">{r.name}</div>
+                    <div className="break-all text-xs text-muted-foreground">{r.email}</div>
+                    <div className="text-xs text-muted-foreground">Pedido em {fmt(r.created_at)}</div>
+                  </td>
+                  <td className="px-2 py-3">
+                    <span className={`inline-block rounded-full px-2.5 py-1 text-xs font-semibold ${st.cls}`}>
+                      {st.label}
                     </span>
-                  </div>
-                  {!p.is_admin && (
-                    <div className="flex items-center gap-1 shrink-0">
-                      {p.status !== "approved" && (
-                        <Button size="icon" variant="outline" title="Aprovar" onClick={() => updateStatus(p.id, "approved")}>
-                          <Check size={15} style={{ color: "#43A047" }} />
-                        </Button>
-                      )}
-                      {p.status !== "rejected" && (
-                        <Button size="icon" variant="outline" title="Recusar acesso" onClick={() => updateStatus(p.id, "rejected")}>
-                          <X size={15} style={{ color: "#F9A825" }} />
-                        </Button>
-                      )}
-                      <Button size="icon" variant="outline" title="Excluir" onClick={() => deleteProfile(p.id)}>
-                        <Trash2 size={15} style={{ color: "#E53935" }} />
-                      </Button>
-                    </div>
-                  )}
-                </div>
-
-                {!p.is_admin && p.status === "approved" && (
-                  <div>
-                    <button
-                      onClick={() => setExpandedId(isExpanded ? null : p.id)}
-                      className="flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground"
-                    >
-                      {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-                      O que essa pessoa pode ver no app
-                    </button>
-                    {isExpanded && (
-                      <div className="mt-2 space-y-1.5 pl-1">
-                        {PERMISSION_LABELS.map(({ key, label }) => (
-                          <label key={key} className="flex items-center gap-2 text-xs cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={perms[key]}
-                              onChange={() => togglePermission(p, key)}
-                              className="w-3.5 h-3.5"
-                            />
-                            <span>{label}</span>
-                          </label>
-                        ))}
-                      </div>
+                    {r.status === "pending" && keySent && (
+                      <div className="mt-1 text-xs text-muted-foreground">chave enviada</div>
                     )}
-                  </div>
-                )}
-
-                {!p.is_admin && p.status === "approved" && (() => {
-                  const link = familyLinks[p.id];
-                  const firstName = (p.full_name || p.email || "a pessoa").split(" ")[0];
-                  return (
-                    <div className="pt-2 border-t space-y-1.5" style={{ borderColor: "#F2F2F2" }}>
-                      <p className="text-xs font-semibold text-muted-foreground">👪 Acompanhar a saúde desta pessoa</p>
-                      {(!link || link.status === "declined" || link.status === "revoked") && (
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs text-muted-foreground">
-                            {link?.status === "declined" ? "Ela recusou o pedido." : link?.status === "revoked" ? "Compartilhamento encerrado." : "Sem pedido."}
-                          </span>
-                          <Button size="sm" variant="outline" onClick={() => askFamily(p)}>
-                            {link ? "Pedir de novo" : "Pedir para acompanhar"}
-                          </Button>
-                        </div>
+                  </td>
+                  <td className="px-2 py-3 text-xs">
+                    {(Object.keys(MODULE_LABELS) as (keyof Modules)[])
+                      .filter((m) => r.modules[m])
+                      .map((m) => MODULE_LABELS[m])
+                      .join(", ") || "—"}
+                  </td>
+                  <td className="px-2 py-3 text-center">{r.device_count}</td>
+                  <td className="px-2 py-3 text-xs">{fmt(r.last_access)}</td>
+                  <td className="px-2 py-3">
+                    <div className="flex flex-wrap gap-1.5">
+                      {r.status !== "blocked" && (
+                        <button className={btn} disabled={isBusy} onClick={() => openKeyModal(r)}>
+                          {hasKey ? "Regenerar chave" : "Gerar chave"}
+                        </button>
                       )}
-                      {link?.status === "pending" && (
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs">⏳ Aguardando {firstName} aceitar no app dela</span>
-                          <Button size="sm" variant="outline" onClick={() => stopFamily(link)}>Cancelar pedido</Button>
-                        </div>
+                      {r.status === "blocked" ? (
+                        <button className={btn} disabled={isBusy} onClick={() => changeStatus(r, "unblock")}>
+                          Desbloquear
+                        </button>
+                      ) : (
+                        <button
+                          className={`${btn} text-red-600 dark:text-red-400`}
+                          disabled={isBusy}
+                          onClick={() => changeStatus(r, "block")}
+                        >
+                          Bloquear
+                        </button>
                       )}
-                      {link?.status === "accepted" && (
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs">✅ Acompanhando (ela autorizou)</span>
-                          <Button size="sm" variant="outline" onClick={() => stopFamily(link)}>Parar de acompanhar</Button>
-                        </div>
+                      {r.status === "pending" && (
+                        <button className={btn} disabled={isBusy} onClick={() => changeStatus(r, "hold")}>
+                          Deixar em espera
+                        </button>
                       )}
-                      <p className="text-[10px] text-muted-foreground">
-                        Só vale depois que a pessoa aceitar no app dela, e ela pode parar quando quiser. Você vê remédios, horários, doses e estoque, nunca receitas nem atendimentos.
-                      </p>
+                      {r.status === "on_hold" && (
+                        <button className={btn} disabled={isBusy} onClick={() => changeStatus(r, "unblock")}>
+                          Tirar da espera
+                        </button>
+                      )}
                     </div>
-                  );
-                })()}
-              </div>
-            );
-          })}
-        </div>
+                  </td>
+                </tr>
+              );
+            })}
+            {!loading && rows.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-2 py-8 text-center text-muted-foreground">
+                  Nenhum cliente ainda.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
       </div>
+
+      {/* Alerta único ao entrar */}
+      {showAlert && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-sm space-y-3 rounded-2xl bg-background p-5 shadow-xl">
+            <h2 className="text-lg font-semibold">Novos pedidos de licença</h2>
+            <p className="text-sm">
+              {awaiting.length === 1
+                ? "1 usuário está aguardando liberação:"
+                : `${awaiting.length} usuários estão aguardando liberação:`}
+            </p>
+            <ul className="max-h-40 list-disc space-y-0.5 overflow-auto pl-5 text-sm text-muted-foreground">
+              {awaiting.map((a) => (
+                <li key={a.id}>{a.name}</li>
+              ))}
+            </ul>
+            <button
+              className="w-full rounded-lg bg-primary px-4 py-2.5 font-semibold text-primary-foreground"
+              onClick={() => setShowAlert(false)}
+            >
+              Entendi
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: gerar / enviar chave */}
+      {target && (
+        <div className="fixed inset-0 z-[110] flex items-end justify-center bg-black/60 p-4 sm:items-center">
+          <div
+            className="w-full max-w-sm space-y-4 rounded-2xl bg-background p-5 shadow-xl"
+            style={{ paddingBottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
+          >
+            <div>
+              <h2 className="text-lg font-semibold">
+                {target.key_generated_at ? "Regenerar chave" : "Gerar chave"}
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                {target.name} · {target.email}
+              </p>
+            </div>
+
+            {!generated ? (
+              <>
+                <fieldset className="space-y-2">
+                  <legend className="mb-1 text-sm font-medium">Módulos liberados</legend>
+                  {(Object.keys(MODULE_LABELS) as (keyof Modules)[]).map((m) => (
+                    <label key={m} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4"
+                        checked={mods[m]}
+                        onChange={(e) => setMods({ ...mods, [m]: e.target.checked })}
+                      />
+                      {MODULE_LABELS[m]}
+                    </label>
+                  ))}
+                </fieldset>
+                {target.key_generated_at && (
+                  <p className="text-xs text-muted-foreground">
+                    A chave anterior deixa de funcionar assim que a nova for gerada.
+                  </p>
+                )}
+                <div className="flex gap-2">
+                  <button className={`${btn} flex-1 py-2.5`} onClick={closeKeyModal}>
+                    Cancelar
+                  </button>
+                  <button
+                    className="flex-1 rounded-lg bg-primary px-4 py-2.5 font-semibold text-primary-foreground disabled:opacity-60"
+                    disabled={genBusy}
+                    onClick={generate}
+                  >
+                    {genBusy ? "Gerando..." : "Gerar chave"}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="rounded-lg bg-muted px-3 py-3 text-center">
+                  <div className="font-mono text-xl font-semibold tracking-wider">{generated}</div>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Esta chave aparece só agora e não fica guardada em texto. Copie ou envie antes de fechar.
+                </p>
+                <button
+                  className={`w-full rounded-lg px-4 py-2.5 font-semibold transition-colors ${
+                    copied ? "bg-green-600 text-white" : "bg-primary text-primary-foreground"
+                  }`}
+                  onClick={async () => {
+                    if (await copyText(generated)) {
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2200);
+                    }
+                  }}
+                >
+                  {copied ? "✓ Chave copiada!" : "Copiar chave"}
+                </button>
+                <a
+                  href={mailtoHref()}
+                  className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
+                >
+                  Enviar por e-mail
+                </a>
+                <button className="w-full text-center text-sm text-muted-foreground underline" onClick={closeKeyModal}>
+                  Fechar
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
