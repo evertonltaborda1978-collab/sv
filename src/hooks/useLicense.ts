@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { EMPTY_MODULES, getMyLicense, type Modules, type MyLicense } from "@/lib/license";
+import { ADMIN_EMAIL, EMPTY_MODULES, getMyLicense, type Modules, type MyLicense } from "@/lib/license";
 
 const CACHE_KEY = "sv_license_cache";
 
@@ -20,9 +20,11 @@ function readCache(): MyLicense | null {
 export function useLicense() {
   const [license, setLicense] = useState<MyLicense | null>(readCache());
   const [loading, setLoading] = useState(true);
+  const [email, setEmail] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const { data } = await supabase.auth.getSession();
+    setEmail(data.session?.user?.email?.toLowerCase() ?? null);
     if (!data.session) {
       setLicense(null);
       try { localStorage.removeItem(CACHE_KEY); } catch { /* ignore */ }
@@ -54,13 +56,17 @@ export function useLicense() {
   }, [refresh]);
 
   const modules: Modules = license?.modules ?? EMPTY_MODULES;
+  // Administrador: somente o e-mail principal (evertonltaborda@gmail.com).
+  // A segurança de verdade está no servidor: as funções do painel só respondem a ele.
+  const isAdmin = !!email && email === ADMIN_EMAIL.toLowerCase();
 
   return {
     license,
     loading,
     refresh,
-    isAdmin: !!license?.is_admin,
+    email,
+    isAdmin,
     isActive: license?.status === "active",
-    hasModule: (m: keyof Modules) => !!license?.is_admin || !!modules[m],
+    hasModule: (m: keyof Modules) => isAdmin || !!modules[m],
   };
 }

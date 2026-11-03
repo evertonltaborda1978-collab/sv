@@ -76,8 +76,9 @@ const Index = () => {
   // Licença (SV Gerenciador): define quem é administrador e quais módulos
   // (Saúde, Segurança, Agenda) estão liberados para esta conta.
   const lic = useLicense();
+  // Só o e-mail principal vê a Administração (dentro do menu •••).
   const isAdmin = lic.isAdmin;
-  const licModules = lic.license && !lic.license.is_admin ? lic.license.modules : null;
+  const licModules = lic.license && !lic.isAdmin ? lic.license.modules : null;
   const permissions = licModules
     ? {
         ...basePermissions,
@@ -93,8 +94,8 @@ const Index = () => {
   const deviceRegisteredRef = useRef(false);
   useEffect(() => {
     const l = lic.license;
-    if (!l || l.is_admin) {
-      if (l?.is_admin && !deviceRegisteredRef.current && navigator.onLine) {
+    if (!l || lic.isAdmin) {
+      if (lic.isAdmin && !deviceRegisteredRef.current && navigator.onLine) {
         deviceRegisteredRef.current = true;
         void registerDevice();
       }
@@ -109,7 +110,7 @@ const Index = () => {
       void registerDevice();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lic.license]);
+  }, [lic.license, lic.isAdmin]);
   const { currentDevice, fetchDevices } = useDeviceTracking();
   const { recordLocation } = useDeviceLocations();
   const [showLabelModal, setShowLabelModal] = useState(false);

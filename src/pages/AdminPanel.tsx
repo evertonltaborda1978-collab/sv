@@ -20,6 +20,17 @@ const STATUS_STYLE: Record<LicenseRow["status"], { label: string; cls: string }>
   on_hold: { label: "Em espera", cls: "bg-slate-500/20 text-slate-700 dark:text-slate-300" },
 };
 
+const friendly = (e: any, fallback: string) => {
+  const m = String(e?.message ?? "");
+  if (/acesso negado/i.test(m)) {
+    return "O servidor ainda não reconhece este e-mail como administrador. Rode o SQL 03_trocar_admin.sql no Supabase e entre de novo.";
+  }
+  if (/could not find the function|does not exist|schema cache/i.test(m)) {
+    return "As funções de licenciamento não estão instaladas no Supabase. Rode o SQL 01_licenciamento.sql e depois o 03_trocar_admin.sql.";
+  }
+  return m || fallback;
+};
+
 const fmt = (iso: string | null) =>
   iso
     ? new Date(iso).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })
@@ -69,7 +80,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
         setShowAlert(true);
       }
     } catch (e: any) {
-      setError(e?.message ?? "Não foi possível carregar os clientes.");
+      setError(friendly(e, "Não foi possível carregar os clientes."));
     } finally {
       setLoading(false);
     }
@@ -104,7 +115,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     try {
       setGenerated(await adminGenerateKey(target.id, mods));
     } catch (e: any) {
-      setError(e?.message ?? "Erro ao gerar a chave.");
+      setError(friendly(e, "Erro ao gerar a chave."));
     } finally {
       setGenBusy(false);
     }
@@ -133,7 +144,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
       await adminSetStatus(r.id, action);
       await load();
     } catch (e: any) {
-      setError(e?.message ?? "Erro ao atualizar.");
+      setError(friendly(e, "Erro ao atualizar."));
     } finally {
       setBusyId(null);
     }
