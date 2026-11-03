@@ -6,9 +6,10 @@ const sb = supabase as any;
 export const APP_NAME = "Secretária Virtual";
 export const APP_SHORT = "Secretária";
 export const APP_URL = "https://evertonltaborda1978-collab.github.io/sv/";
-export const ADMIN_EMAIL = "evertontab@gmail.com";
+export const ADMIN_EMAIL = "evertonltaborda@gmail.com"; // painel e acesso total
+export const BACKOFFICE_EMAIL = "evertontab@gmail.com"; // só PIX/licenças, não entra no app
 
-export type LicenseStatus = "pending" | "active" | "blocked" | "on_hold" | "none";
+export type LicenseStatus = "pending" | "active" | "blocked" | "on_hold" | "none" | "backoffice";
 
 export interface Modules {
   saude: boolean;
@@ -34,7 +35,7 @@ export interface LicenseRow {
   id: string;
   name: string;
   email: string;
-  status: Exclude<LicenseStatus, "none">;
+  status: "pending" | "active" | "blocked" | "on_hold";
   modules: Modules;
   key_generated_at: string | null;
   key_used_at: string | null;
@@ -122,4 +123,5 @@ export const BLOCK_MESSAGES: Record<string, string> = {
   blocked: "Este acesso está bloqueado. Fale com o administrador.",
   on_hold: "Seu pedido está em espera. Aguarde o contato do administrador.",
   none: "Nenhuma licença encontrada para este e-mail. Peça a sua em Obter Licença.",
+  backoffice: "Este e-mail é só de retaguarda (PIX e licenças) e não entra no app. Use o e-mail de uso diário.",
 };
