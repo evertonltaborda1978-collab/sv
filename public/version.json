@@ -1,6 +1,7 @@
 {
-  "version": "v4.98",
+  "version": "v4.99",
   "history": [
+    { "version": "v4.99", "changes": "Painel de Administração com controle por aba: para cada usuário dá para liberar ou bloquear Agenda, Combustível, Saúde, Tempo, Local, Segurança e Relatório de Turno (Notas é sempre liberada). Novo botão Módulos na tabela, para mudar as abas a qualquer momento sem gerar chave nova, com Marcar todas e Desmarcar todas. A aba aberta que for bloqueada volta para Notas. Precisa rodar o SQL 04_modulos_por_aba.sql no Supabase. Arquivos: license.ts, useLicense.ts, Index.tsx, AdminPanel.tsx." },
     { "version": "v4.98", "changes": "Administração agora fica dentro do menu ••• (no topo da lista), visível só para o e-mail principal evertonltaborda@gmail.com; o botão de escudo do cabeçalho foi removido. Qualquer outro e-mail não vê a opção. Arquivos: Index.tsx, useLicense.ts." },
     { "version": "v4.97", "changes": "Administração: o botão com escudo aparece no cabeçalho (ao lado do Sair) e também em ••• > Administração para o e-mail evertonltaborda@gmail.com. Se o servidor ainda não reconhecer o administrador, o painel agora avisa o que fazer (rodar o SQL 03) em vez de ficar em branco. Arquivos: useLicense.ts, Index.tsx, AdminPanel.tsx." },
     { "version": "v4.96", "changes": "Administrador corrigido: o painel de Administração agora abre com evertonltaborda@gmail.com, com acesso total. O e-mail evertontab@gmail.com ficou só como retaguarda (chave PIX e licenças): se tentar entrar no app, aparece um aviso e a sessão é encerrada. Precisa rodar o SQL 03_trocar_admin.sql no Supabase. Arquivos: license.ts." },

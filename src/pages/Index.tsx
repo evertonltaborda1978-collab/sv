@@ -25,7 +25,7 @@ import { APP_VERSION, forceUpdateApp } from "@/lib/appVersion";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLicense } from "@/hooks/useLicense";
 import { PixDialog } from "@/components/PixSupport";
-import { APP_NAME, registerDevice } from "@/lib/license";
+import { APP_NAME, normalizeModules, registerDevice } from "@/lib/license";
 import { toast } from "@/hooks/use-toast";
 import { syncNativeAlarms, type NativeAlarmReminder } from "@/lib/nativeAlarm";
 import type { Medication } from "@/lib/medicationTypes";
@@ -74,20 +74,38 @@ const Index = () => {
   const [showPix, setShowPix] = useState(false);
 
   // Licença (SV Gerenciador): define quem é administrador e quais módulos
-  // (Saúde, Segurança, Agenda) estão liberados para esta conta.
+  // (Agenda, Combustível, Saúde, Tempo, Local, Segurança, Relatório de Turno) estão liberados para esta conta.
   const lic = useLicense();
   // Só o e-mail principal vê a Administração (dentro do menu •••).
   const isAdmin = lic.isAdmin;
-  const licModules = lic.license && !lic.isAdmin ? lic.license.modules : null;
+  const licModules = lic.license && !lic.isAdmin ? normalizeModules(lic.license.modules) : null;
+  // Cada aba segue o módulo liberado pelo administrador para esta conta.
   const permissions = licModules
     ? {
         ...basePermissions,
-        medication: basePermissions.medication !== false && licModules.saude,
-        devices: basePermissions.devices !== false && licModules.seguranca,
-        location: basePermissions.location !== false && licModules.seguranca,
         calendar: basePermissions.calendar !== false && licModules.agenda,
+        fuel: basePermissions.fuel !== false && licModules.combustivel,
+        medication: basePermissions.medication !== false && licModules.saude,
+        weather: basePermissions.weather !== false && licModules.tempo,
+        location: basePermissions.location !== false && licModules.local,
+        devices: basePermissions.devices !== false && licModules.seguranca,
+        turno: basePermissions.turno !== false && licModules.turno,
       }
     : basePermissions;
+
+  // Se a aba aberta for bloqueada (ex.: o administrador tirou o módulo), volta para Notas.
+  useEffect(() => {
+    const blocked: Record<string, boolean> = {
+      calendar: permissions.calendar === false,
+      fuel: permissions.fuel === false,
+      medication: permissions.medication === false,
+      weather: permissions.weather === false,
+      location: permissions.location === false,
+      devices: permissions.devices === false,
+    };
+    if (blocked[tab]) changeTab("notes");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, permissions.calendar, permissions.fuel, permissions.medication, permissions.weather, permissions.location, permissions.devices]);
 
   // Conta bloqueada, em espera ou sem licença: encerra a sessão.
   // Registra o aparelho (contador de dispositivos / último acesso) uma vez por abertura.

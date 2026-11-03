@@ -11,19 +11,60 @@ export const BACKOFFICE_EMAIL = "evertontab@gmail.com"; // só PIX/licenças, n�
 
 export type LicenseStatus = "pending" | "active" | "blocked" | "on_hold" | "none" | "backoffice";
 
-export interface Modules {
-  saude: boolean;
-  seguranca: boolean;
-  agenda: boolean;
-}
+// Cada módulo = uma aba/recurso do app que pode ser liberado ou bloqueado por usuário.
+// "Notas" fica sempre liberada.
+export type ModuleKey =
+  | "agenda"
+  | "combustivel"
+  | "saude"
+  | "tempo"
+  | "local"
+  | "seguranca"
+  | "turno";
 
-export const EMPTY_MODULES: Modules = { saude: false, seguranca: false, agenda: false };
+export type Modules = Record<ModuleKey, boolean>;
 
-export const MODULE_LABELS: Record<keyof Modules, string> = {
-  saude: "Saúde",
-  seguranca: "Segurança",
+export const MODULE_ORDER: ModuleKey[] = [
+  "agenda",
+  "combustivel",
+  "saude",
+  "tempo",
+  "local",
+  "seguranca",
+  "turno",
+];
+
+export const MODULE_LABELS: Record<ModuleKey, string> = {
   agenda: "Agenda",
+  combustivel: "Combustível",
+  saude: "Saúde",
+  tempo: "Tempo",
+  local: "Local",
+  seguranca: "Segurança",
+  turno: "Relatório de Turno",
 };
+
+export const ALL_MODULES: Modules = {
+  agenda: true, combustivel: true, saude: true, tempo: true, local: true, seguranca: true, turno: true,
+};
+
+export const EMPTY_MODULES: Modules = {
+  agenda: false, combustivel: false, saude: false, tempo: false, local: false, seguranca: false, turno: false,
+};
+
+/** Completa módulos de licenças antigas (que só tinham saude/seguranca/agenda). */
+export function normalizeModules(m?: Partial<Modules> | null): Modules {
+  const x = (m ?? {}) as Partial<Modules>;
+  return {
+    agenda: !!x.agenda,
+    saude: !!x.saude,
+    seguranca: !!x.seguranca,
+    local: x.local ?? !!x.seguranca, // antes a aba Local seguia a Segurança
+    combustivel: x.combustivel ?? true, // abas que antes não eram controladas
+    tempo: x.tempo ?? true,
+    turno: x.turno ?? true,
+  };
+}
 
 export interface MyLicense {
   status: LicenseStatus;

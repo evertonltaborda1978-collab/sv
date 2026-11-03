@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { ADMIN_EMAIL, EMPTY_MODULES, getMyLicense, type Modules, type MyLicense } from "@/lib/license";
+import { ADMIN_EMAIL, EMPTY_MODULES, getMyLicense, normalizeModules, type ModuleKey, type Modules, type MyLicense } from "@/lib/license";
 
 const CACHE_KEY = "sv_license_cache";
 
@@ -55,7 +55,7 @@ export function useLicense() {
     };
   }, [refresh]);
 
-  const modules: Modules = license?.modules ?? EMPTY_MODULES;
+  const modules: Modules = license ? normalizeModules(license.modules) : EMPTY_MODULES;
   // Administrador: somente o e-mail principal (evertonltaborda@gmail.com).
   // A segurança de verdade está no servidor: as funções do painel só respondem a ele.
   const isAdmin = !!email && email === ADMIN_EMAIL.toLowerCase();
@@ -67,6 +67,6 @@ export function useLicense() {
     email,
     isAdmin,
     isActive: license?.status === "active",
-    hasModule: (m: keyof Modules) => isAdmin || !!modules[m],
+    hasModule: (m: ModuleKey) => isAdmin || !!modules[m],
   };
 }

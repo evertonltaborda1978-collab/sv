@@ -3,10 +3,15 @@ import { useLicense } from "@/hooks/useLicense";
 import {
   APP_NAME,
   APP_URL,
+  ALL_MODULES,
+  EMPTY_MODULES,
   MODULE_LABELS,
+  MODULE_ORDER,
   adminGenerateKey,
   adminList,
   adminSetStatus,
+  adminUpdateModules,
+  normalizeModules,
   type LicenseRow,
   type Modules,
 } from "@/lib/license";
@@ -58,7 +63,9 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
 
   // modal de chave
   const [target, setTarget] = useState<LicenseRow | null>(null);
-  const [mods, setMods] = useState<Modules>({ saude: false, seguranca: false, agenda: false });
+  const [mods, setMods] = useState<Modules>({ ...EMPTY_MODULES });
+  const [mode, setMode] = useState<"key" | "modules">("key");
+  const [modalError, setModalError] = useState("");
   const [generated, setGenerated] = useState("");
   const [copied, setCopied] = useState(false);
   const [genBusy, setGenBusy] = useState(false);
@@ -96,10 +103,21 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
   }, [licLoading, isAdmin, load]);
 
   const openKeyModal = (r: LicenseRow) => {
+    setMode("key");
     setTarget(r);
-    setMods({ ...r.modules });
+    setMods(normalizeModules(r.modules));
     setGenerated("");
     setCopied(false);
+    setModalError("");
+  };
+
+  const openModulesModal = (r: LicenseRow) => {
+    setMode("modules");
+    setTarget(r);
+    setMods(normalizeModules(r.modules));
+    setGenerated("");
+    setCopied(false);
+    setModalError("");
   };
 
   const closeKeyModal = () => {
@@ -108,14 +126,19 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     load();
   };
 
-  const generate = async () => {
+  const submit = async () => {
     if (!target) return;
     setGenBusy(true);
-    setError("");
+    setModalError("");
     try {
-      setGenerated(await adminGenerateKey(target.id, mods));
+      if (mode === "modules") {
+        await adminUpdateModules(target.id, mods);
+        closeKeyModal();
+      } else {
+        setGenerated(await adminGenerateKey(target.id, mods));
+      }
     } catch (e: any) {
-      setError(friendly(e, "Erro ao gerar a chave."));
+      setModalError(friendly(e, mode === "modules" ? "Erro ao salvar os módulos." : "Erro ao gerar a chave."));
     } finally {
       setGenBusy(false);
     }
@@ -214,15 +237,22 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                     )}
                   </td>
                   <td className="px-2 py-3 text-xs">
-                    {(Object.keys(MODULE_LABELS) as (keyof Modules)[])
-                      .filter((m) => r.modules[m])
-                      .map((m) => MODULE_LABELS[m])
-                      .join(", ") || "—"}
+                    <div className="flex flex-wrap gap-1">
+                      {MODULE_ORDER.filter((m) => normalizeModules(r.modules)[m]).map((m) => (
+                        <span key={m} className="rounded bg-muted px-1.5 py-0.5 text-[11px]">
+                          {MODULE_LABELS[m]}
+                        </span>
+                      ))}
+                      {MODULE_ORDER.every((m) => !normalizeModules(r.modules)[m]) && "—"}
+                    </div>
                   </td>
                   <td className="px-2 py-3 text-center">{r.device_count}</td>
                   <td className="px-2 py-3 text-xs">{fmt(r.last_access)}</td>
                   <td className="px-2 py-3">
                     <div className="flex flex-wrap gap-1.5">
+                      <button className={btn} disabled={isBusy} onClick={() => openModulesModal(r)}>
+                        Módulos
+                      </button>
                       {r.status !== "blocked" && (
                         <button className={btn} disabled={isBusy} onClick={() => openKeyModal(r)}>
                           {hasKey ? "Regenerar chave" : "Gerar chave"}
@@ -301,7 +331,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
           >
             <div>
               <h2 className="text-lg font-semibold">
-                {target.key_generated_at ? "Regenerar chave" : "Gerar chave"}
+                {mode === "modules" ? "Módulos liberados" : target.key_generated_at ? "Regenerar chave" : "Gerar chave"}
               </h2>
               <p className="text-sm text-muted-foreground">
                 {target.name} · {target.email}
@@ -311,8 +341,16 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
             {!generated ? (
               <>
                 <fieldset className="space-y-2">
-                  <legend className="mb-1 text-sm font-medium">Módulos liberados</legend>
-                  {(Object.keys(MODULE_LABELS) as (keyof Modules)[]).map((m) => (
+                  <legend className="mb-1 text-sm font-medium">Abas liberadas (Notas é sempre liberada)</legend>
+                  <div className="mb-1 flex gap-3 text-xs">
+                    <button type="button" className="underline" onClick={() => setMods({ ...ALL_MODULES })}>
+                      Marcar todas
+                    </button>
+                    <button type="button" className="underline" onClick={() => setMods({ ...EMPTY_MODULES })}>
+                      Desmarcar todas
+                    </button>
+                  </div>
+                  {MODULE_ORDER.map((m) => (
                     <label key={m} className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
@@ -324,9 +362,19 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                     </label>
                   ))}
                 </fieldset>
-                {target.key_generated_at && (
+                {mode === "key" && target.key_generated_at && (
                   <p className="text-xs text-muted-foreground">
                     A chave anterior deixa de funcionar assim que a nova for gerada.
+                  </p>
+                )}
+                {mode === "modules" && (
+                  <p className="text-xs text-muted-foreground">
+                    A mudança vale na próxima vez que o usuário abrir o app com internet.
+                  </p>
+                )}
+                {modalError && (
+                  <p role="alert" className="rounded-lg bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                    {modalError}
                   </p>
                 )}
                 <div className="flex gap-2">
@@ -336,9 +384,11 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                   <button
                     className="flex-1 rounded-lg bg-primary px-4 py-2.5 font-semibold text-primary-foreground disabled:opacity-60"
                     disabled={genBusy}
-                    onClick={generate}
+                    onClick={submit}
                   >
-                    {genBusy ? "Gerando..." : "Gerar chave"}
+                    {mode === "modules"
+                      ? genBusy ? "Salvando..." : "Salvar"
+                      : genBusy ? "Gerando..." : "Gerar chave"}
                   </button>
                 </div>
               </>
