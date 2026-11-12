@@ -61,6 +61,8 @@ import { toast } from "@/hooks/use-toast";
 import { ALERT_SOUND_OPTIONS, playAlertSoundPreview, type AlertSoundId } from "@/lib/alertSound";
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { consistentHtml } from "@/lib/richTextConsistency";
+import { useSpeech } from "@/hooks/useSpeech";
+import { evaluateExpression } from "@/lib/moneyCalc";
 
 // ── Types ──────────────────────────────────────────────
 export interface ChecklistItem {
@@ -75,6 +77,8 @@ export interface TableItem {
   nome: string;
   valor: string; // ex: "150", "-100", "-10%", "5%"
   marcado: boolean;
+  // Só existe quando a calculadora 🧮 foi usada nesta linha. Digitar o valor direto apaga isto.
+  calc?: { historico: { expressao: string; resultado: number }[] };
 }
 
 export interface TextStyle {
@@ -383,6 +387,19 @@ function tableValorParaNumero(valor: string): number {
 
 function formatarMoedaBRL(valor: number): string {
   return valor.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+// Número simples (ex.: "100,49", "-5", "R$ 10"): é o único caso mostrado como dinheiro.
+// Porcentagem (-10%) e expressões digitadas direto no campo continuam aparecendo como estão.
+function valorEhNumeroSimples(valor: string): boolean {
+  const limpo = valor.trim().replace(/R\$/gi, "").trim();
+  return /^-?\d+([.,]\d+)?$/.test(limpo);
+}
+
+// Fora da edição do campo o valor aparece como R$ 100,49; ao tocar no campo volta o texto digitado.
+function valorParaExibir(valor: string, editando: boolean): string {
+  if (editando || !valor.trim() || tableValorEhPorcentagem(valor) || !valorEhNumeroSimples(valor)) return valor;
+  return formatarMoedaBRL(tableValorParaNumero(valor));
 }
 
 /**
@@ -1536,7 +1553,33 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   };
 
   const [readingMode, setReadingMode] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const speech = useSpeech();
+  const isSpeaking = speech.speaking;
+
+  // Tabela Manual: calculadora por linha (uma aberta por vez) e foco do campo de valor
+  const [calcRow, setCalcRow] = useState<{ blockIdx: number; itemId: string } | null>(null);
+  const [calcExpr, setCalcExpr] = useState("");
+  const [calcError, setCalcError] = useState<string | null>(null);
+  const [calcMin, setCalcMin] = useState<Record<string, boolean>>({});
+  const [valorFocadoId, setValorFocadoId] = useState<string | null>(null);
+  const calcInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (calcRow) calcInputRef.current?.focus();
+  }, [calcRow]);
+
+  useEffect(() => {
+    if (readOnly || !open) setCalcRow(null);
+  }, [readOnly, open]);
+
+  // Ao fechar a nota, para a leitura em voz alta
+  useEffect(() => {
+    if (!open) speech.stop();
+  }, [open, speech.stop]);
+
+  useEffect(() => {
+    if (speech.message) toast({ title: "Leitura em voz alta", description: speech.message });
+  }, [speech.message]);
 
   const getPlainTextForSpeech = () => {
     const parts: string[] = [];
@@ -1546,16 +1589,17 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       else if (b.type === "checklist" && b.items) {
         b.items.forEach((it) => { if (it.text?.trim()) parts.push(`${it.checked ? "concluído" : "pendente"}: ${it.text.trim()}`); });
       } else if (b.type === "table" && b.tableItems) {
-        b.tableItems.forEach((it) => { if (it.nome?.trim()) parts.push(`${it.nome.trim()}: ${it.valor || "0"}`); });
+        b.tableItems.forEach((it) => { if (it.nome?.trim()) parts.push(`${it.nome.trim()}: ${valorParaExibir(it.valor || "0", false)}`); });
       }
     });
     return parts.join(". ");
   };
 
+  // Leitura em voz alta: voz local pt-BR (funciona offline no Android), com cancel() antes de falar
+  // e aviso quando o aparelho não tem sintetizador ou a voz em português.
   const toggleReadAloud = () => {
-    if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
+    if (speech.speaking) {
+      speech.stop();
       return;
     }
     const text = getPlainTextForSpeech();
@@ -1563,22 +1607,44 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       toast({ title: "Nada pra ler", description: "Essa nota ainda está vazia." });
       return;
     }
-    try {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "pt-BR";
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-      setIsSpeaking(true);
-    } catch {
-      toast({ title: "Não consegui ler em voz alta", description: "Esse navegador pode não ter suporte a essa função." });
-    }
+    speech.speak(text);
   };
 
-  useEffect(() => {
-    return () => { window.speechSynthesis?.cancel(); };
-  }, []);
+  // ── Tabela Manual: calculadora por linha ─────────────
+  const abrirCalcTabela = (blockIdx: number, item: TableItem) => {
+    const hist = item.calc?.historico ?? [];
+    setCalcError(null);
+    setCalcExpr(hist.length ? hist[hist.length - 1].expressao : "");
+    setCalcRow({ blockIdx, itemId: item.id });
+  };
+
+  const fecharCalcTabela = () => {
+    setCalcRow(null);
+    setCalcError(null);
+  };
+
+  const confirmarCalcTabela = () => {
+    if (!calcRow) return;
+    const expr = calcExpr.trim();
+    if (!expr) { fecharCalcTabela(); return; }
+    const resultado = evaluateExpression(expr);
+    if (resultado === null) {
+      setCalcError("Conta inválida. Exemplo: 3.99 + 8.32 + 25.78");
+      return;
+    }
+    const itemAtual = blocks[calcRow.blockIdx]?.tableItems?.find((i) => i.id === calcRow.itemId);
+    const historico = [...(itemAtual?.calc?.historico ?? []), { expressao: expr, resultado }].slice(-10);
+    updateTableItem(calcRow.blockIdx, calcRow.itemId, {
+      valor: resultado.toFixed(2).replace(".", ","),
+      calc: { historico },
+    });
+    fecharCalcTabela();
+  };
+
+  const inserirOperadorCalc = (op: string) => {
+    setCalcExpr((prev) => (op === "(" || op === ")" ? prev + op : `${prev.trimEnd()} ${op} `));
+    calcInputRef.current?.focus();
+  };
 
   const themeBase = getTheme(selectedColor);
   const isDark = selectedColor === "bg-gray-800";
@@ -3240,20 +3306,25 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                         {(() => {
                           // Largura da coluna de valor: cresce com o tamanho da fonte E com o
                           // valor mais longo já digitado na tabela, pra nunca cortar o texto.
-                          const maiorValor = block.tableItems.reduce((max, it) => Math.max(max, (it.valor || "").length), 4);
+                          const maiorValor = block.tableItems.reduce((max, it) => Math.max(max, valorParaExibir(it.valor || "", false).length), 4);
                           const checkboxCol = Math.min(tFont, 22) + 8;
                           const valueCol = Math.min(Math.max(56, maiorValor * tFont * 0.62 + 14), 180);
                           const trashCol = readOnly ? 0 : Math.min(tFont * 0.9, 20) + 10;
+                          const calcCol = readOnly ? 0 : Math.min(tFont, 22) + 10;
                           return block.tableItems.map((item) => {
                           const ehPct = tableValorEhPorcentagem(item.valor);
                           const numero = tableValorParaNumero(item.valor);
+                          const calcAberta = calcRow?.blockIdx === idx && calcRow?.itemId === item.id;
+                          const previaCalc = calcAberta && /[+\-−×÷*/]/.test(calcExpr.replace(/^\s*-/, "")) ? evaluateExpression(calcExpr) : null;
+                          const historicoCalc = item.calc?.historico ?? [];
+                          const histMinimizado = !!calcMin[item.id];
                           return (
                             <div
                               key={item.id}
                               className="rounded-xl px-2 py-1.5 w-full"
                               style={{
                                 display: "grid",
-                                gridTemplateColumns: `${checkboxCol}px minmax(0, 1fr) ${valueCol}px${trashCol ? ` ${trashCol}px` : ""}`,
+                                gridTemplateColumns: `${checkboxCol}px minmax(0, 1fr) ${valueCol}px${calcCol ? ` ${calcCol}px` : ""}${trashCol ? ` ${trashCol}px` : ""}`,
                                 columnGap: 6,
                                 alignItems: "center",
                                 background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.025)",
@@ -3298,13 +3369,20 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     el.style.height = `${el.scrollHeight}px`;
                                   }
                                 }}
-                                value={item.valor}
+                                value={valorParaExibir(item.valor, valorFocadoId === item.id)}
                                 onChange={(e) => {
-                                  if (!readOnly) updateTableItem(idx, item.id, { valor: e.target.value });
+                                  // Digitar o valor direto apaga a conta antiga (some o histórico e os botões)
+                                  if (!readOnly) updateTableItem(idx, item.id, item.calc ? { valor: e.target.value, calc: undefined } : { valor: e.target.value });
                                   e.target.style.height = "auto";
                                   e.target.style.height = `${e.target.scrollHeight}px`;
                                 }}
-                                onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; }}
+                                onFocus={(e) => {
+                                  focusedBlockRef.current = idx; activeFieldRef.current = "content";
+                                  setValorFocadoId(item.id);
+                                  const el = e.target;
+                                  requestAnimationFrame(() => { try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignora */ } });
+                                }}
+                                onBlur={() => setValorFocadoId((cur) => (cur === item.id ? null : cur))}
                                 onPaste={handleMobilePaste}
                                 readOnly={readOnly}
                                 rows={1}
@@ -3323,6 +3401,21 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                               />
                               {!readOnly && (
                                 <button
+                                  onClick={() => (calcAberta ? fecharCalcTabela() : abrirCalcTabela(idx, item))}
+                                  className="rounded"
+                                  style={{
+                                    padding: 2, minWidth: 0, justifySelf: "center", lineHeight: 1,
+                                    fontSize: Math.min(tFont * 0.95, 20),
+                                    background: calcAberta ? theme.borderAccent : "transparent",
+                                  }}
+                                  aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
+                                  aria-expanded={calcAberta}
+                                >
+                                  🧮
+                                </button>
+                              )}
+                              {!readOnly && (
+                                <button
                                   onClick={() => setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" })}
                                   className="hover:bg-black/5 rounded"
                                   style={{ color: "#BDBDBD", padding: 2, minWidth: 0, justifySelf: "center" }}
@@ -3330,6 +3423,102 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 >
                                   <Trash2 size={Math.min(tFont * 0.9, 20)} />
                                 </button>
+                              )}
+
+                              {/* Calculadora da linha: abre ao tocar no 🧮 e some ao confirmar (Enter ou ✓) */}
+                              {!readOnly && calcAberta && (
+                                <div
+                                  style={{
+                                    gridColumn: "1 / -1", display: "flex", flexDirection: "column", gap: 6,
+                                    padding: 8, borderRadius: 10,
+                                    background: isDark ? "rgba(255,255,255,0.06)" : "rgba(0,0,0,0.05)",
+                                  }}
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                                    <input
+                                      ref={calcInputRef}
+                                      value={calcExpr}
+                                      onChange={(e) => { setCalcExpr(e.target.value); if (calcError) setCalcError(null); }}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") { e.preventDefault(); confirmarCalcTabela(); }
+                                        else if (e.key === "Escape") { e.preventDefault(); fecharCalcTabela(); }
+                                      }}
+                                      onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; }}
+                                      placeholder="3.99 + 8.32 + 25.78"
+                                      autoComplete="off"
+                                      autoCapitalize="off"
+                                      spellCheck={false}
+                                      enterKeyHint="done"
+                                      aria-label="Conta"
+                                      style={{
+                                        flex: 1, minWidth: 0, fontSize: tFont, color: textColor, background: "transparent",
+                                        border: `1px solid ${theme.lines}`, borderRadius: 8, padding: "6px 8px", outline: "none",
+                                      }}
+                                    />
+                                    <button
+                                      onClick={confirmarCalcTabela}
+                                      aria-label="Confirmar conta"
+                                      className="flex items-center justify-center rounded-lg"
+                                      style={{ background: "#2D9E7F", width: 36, height: 36, flexShrink: 0 }}
+                                    >
+                                      <Check size={18} color="#FFF" strokeWidth={2.5} />
+                                    </button>
+                                  </div>
+                                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                                    {["+", "−", "×", "÷", "(", ")"].map((op) => (
+                                      <button
+                                        key={op}
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => inserirOperadorCalc(op)}
+                                        style={{
+                                          minWidth: 34, padding: "4px 8px", borderRadius: 8, fontSize: tFont * 0.9, fontWeight: 600,
+                                          color: textColor, border: `1px solid ${theme.lines}`, background: "transparent",
+                                        }}
+                                      >
+                                        {op}
+                                      </button>
+                                    ))}
+                                    {previaCalc !== null && (
+                                      <span style={{ marginLeft: "auto", fontSize: tFont * 0.9, fontWeight: 600, color: theme.textMuted }}>
+                                        = {formatarMoedaBRL(previaCalc)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {calcError && (
+                                    <p role="alert" style={{ fontSize: tFont * 0.8, color: "#E53935" }}>{calcError}</p>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Histórico da conta: só aparece se a calculadora foi usada nesta linha */}
+                              {historicoCalc.length > 0 && !calcAberta && (
+                                <div
+                                  style={{
+                                    gridColumn: "1 / -1", padding: "4px 8px", borderRadius: 8,
+                                    background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)",
+                                    fontSize: tFont * 0.75,
+                                  }}
+                                >
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                    <span style={{ color: theme.textMuted }}>Conta ({historicoCalc.length})</span>
+                                    <button
+                                      onClick={() => setCalcMin((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                      aria-expanded={!histMinimizado}
+                                      style={{ color: theme.borderAccent, fontWeight: 600, padding: "2px 6px" }}
+                                    >
+                                      {histMinimizado ? "▸ Maximizar" : "▾ Minimizar"}
+                                    </button>
+                                  </div>
+                                  {!histMinimizado && (
+                                    <div style={{ marginTop: 2 }}>
+                                      {[...historicoCalc].reverse().map((h, hi) => (
+                                        <div key={hi} style={{ color: textColor, opacity: 0.8, overflowWrap: "anywhere" }}>
+                                          {h.expressao} = <strong>{formatarMoedaBRL(h.resultado)}</strong>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </div>
                           );
@@ -3587,23 +3776,51 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             </div>
           ) : (
             <div
-              className="flex gap-3 px-4 py-2.5 shrink-0 justify-center items-center"
+              className="flex flex-wrap gap-x-3 gap-y-2 px-3 py-2.5 shrink-0 justify-between items-center"
               style={{
                 background: theme.toolbarBg,
                 borderTop: `1px solid ${theme.lines}`,
                 paddingBottom: "calc(60px + env(safe-area-inset-bottom))",
               }}
             >
-              <span className="text-sm font-semibold" style={{ color: theme.textMuted }}>👁️ Modo visualização</span>
-              {editingNote && (
+              {/* Esquerda: leitura limpa e áudio */}
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={enterEditMode}
-                  className="flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[13px] font-semibold text-white shadow-sm hover:shadow-md transition-all duration-200"
-                  style={{ background: "#2D9E7F" }}
+                  onClick={() => setReadingMode(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-semibold whitespace-nowrap transition-all active:scale-95"
+                  style={{ background: "transparent", border: `1px solid ${theme.lines}`, color: textColor }}
+                  title="Modo de leitura limpo"
                 >
-                  <Pencil size={13} /> Editar
+                  📖 Leitura Limpa
                 </button>
-              )}
+                <button
+                  onClick={toggleReadAloud}
+                  aria-pressed={isSpeaking}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-semibold whitespace-nowrap transition-all active:scale-95"
+                  style={{
+                    background: isSpeaking ? theme.borderAccent : "transparent",
+                    border: `1px solid ${theme.lines}`,
+                    color: isSpeaking ? (isDark ? "#1A1A2E" : "#FFF") : textColor,
+                  }}
+                  title={isSpeaking ? "Parar a leitura" : "Ouvir a nota em voz alta"}
+                >
+                  {isSpeaking ? "⏹️ Parar" : "🔊 Ouvir"}
+                </button>
+              </div>
+
+              {/* Direita: botões que já existiam */}
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-semibold whitespace-nowrap" style={{ color: theme.textMuted }}>👁️ Modo visualização</span>
+                {editingNote && (
+                  <button
+                    onClick={enterEditMode}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-semibold text-white whitespace-nowrap shadow-sm hover:shadow-md transition-all duration-200"
+                    style={{ background: "#2D9E7F" }}
+                  >
+                    ✏️ Editar
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
@@ -4229,7 +4446,7 @@ ${blocksToPlainText(blocks)}`.trim();
                       {b.tableItems.map((it) => (
                         <div key={it.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "8px 0", fontSize: Math.max(18, editorFontSize), color: textColor, borderBottom: `1px solid ${theme.lines}` }}>
                           <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.nome}</span>
-                          <strong style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{it.valor}</strong>
+                          <strong style={{ flexShrink: 0, whiteSpace: "nowrap" }}>{valorParaExibir(it.valor, false)}</strong>
                         </div>
                       ))}
                     </div>
