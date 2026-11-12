@@ -396,6 +396,21 @@ function valorEhNumeroSimples(valor: string): boolean {
   return /^-?\d+([.,]\d+)?$/.test(limpo);
 }
 
+// Vírgula automática da calculadora: digitar 832 vira 8,32 (os centavos entram pela direita).
+// Vale para valores no começo da conta ou depois de + − (; depois de × ÷ o número fica como digitado (ex.: × 3).
+function aplicarVirgulaAutomatica(texto: string): string {
+  const m = texto.match(/[\d.,]+$/);
+  if (!m) return texto;
+  const token = m[0];
+  const antes = texto.slice(0, texto.length - token.length);
+  const anterior = antes.trimEnd().slice(-1);
+  if (anterior && !["+", "-", "−", "("].includes(anterior)) return texto;
+  const digitos = token.replace(/\D/g, "").slice(0, 12);
+  if (!digitos || /^0+$/.test(digitos)) return antes; // apagou até zerar: tira o número
+  const cheio = digitos.replace(/^0+(?=\d)/, "").padStart(3, "0");
+  return `${antes}${cheio.slice(0, -2)},${cheio.slice(-2)}`;
+}
+
 // Fora da edição do campo o valor aparece como R$ 100,49; ao tocar no campo volta o texto digitado.
 function valorParaExibir(valor: string, editando: boolean): string {
   if (editando || !valor.trim() || tableValorEhPorcentagem(valor) || !valorEhNumeroSimples(valor)) return valor;
@@ -1563,6 +1578,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [calcMin, setCalcMin] = useState<Record<string, boolean>>({});
   const [valorFocadoId, setValorFocadoId] = useState<string | null>(null);
   const calcInputRef = useRef<HTMLInputElement>(null);
+  const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
+    try { return localStorage.getItem("calc_virgula_auto") !== "0"; } catch { return true; }
+  });
 
   useEffect(() => {
     if (calcRow) calcInputRef.current?.focus();
@@ -1639,6 +1657,14 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       calc: { historico },
     });
     fecharCalcTabela();
+  };
+
+  const alternarVirgulaAuto = () => {
+    setCalcVirgulaAuto((prev) => {
+      try { localStorage.setItem("calc_virgula_auto", prev ? "0" : "1"); } catch { /* sem storage */ }
+      return !prev;
+    });
+    calcInputRef.current?.focus();
   };
 
   const inserirOperadorCalc = (op: string) => {
@@ -3438,13 +3464,13 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     <input
                                       ref={calcInputRef}
                                       value={calcExpr}
-                                      onChange={(e) => { setCalcExpr(e.target.value); if (calcError) setCalcError(null); }}
+                                      onChange={(e) => { setCalcExpr(calcVirgulaAuto ? aplicarVirgulaAutomatica(e.target.value) : e.target.value); if (calcError) setCalcError(null); }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") { e.preventDefault(); confirmarCalcTabela(); }
                                         else if (e.key === "Escape") { e.preventDefault(); fecharCalcTabela(); }
                                       }}
                                       onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; }}
-                                      placeholder="3.99 + 8.32 + 25.78"
+                                      placeholder={calcVirgulaAuto ? "399 + 832" : "3.99 + 8.32 + 25.78"}
                                       autoComplete="off"
                                       autoCapitalize="off"
                                       spellCheck={false}
@@ -3465,6 +3491,20 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     </button>
                                   </div>
                                   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                                    <button
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={alternarVirgulaAuto}
+                                      aria-pressed={calcVirgulaAuto}
+                                      title="Vírgula automática: digitar 832 vira 8,32"
+                                      style={{
+                                        padding: "4px 8px", borderRadius: 8, fontSize: tFont * 0.8, fontWeight: 700,
+                                        color: calcVirgulaAuto ? "#FFF" : textColor,
+                                        background: calcVirgulaAuto ? "#2D9E7F" : "transparent",
+                                        border: `1px solid ${calcVirgulaAuto ? "#2D9E7F" : theme.lines}`,
+                                      }}
+                                    >
+                                      ,00 auto
+                                    </button>
                                     {["+", "−", "×", "÷", "(", ")"].map((op) => (
                                       <button
                                         key={op}
