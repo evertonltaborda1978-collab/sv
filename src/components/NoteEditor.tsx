@@ -46,6 +46,7 @@ import {
   Volume2,
   VolumeX,
   BookOpen,
+  Calculator,
   MoreHorizontal,
 } from "lucide-react";
 import {
@@ -1575,15 +1576,21 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [calcRow, setCalcRow] = useState<{ blockIdx: number; itemId: string } | null>(null);
   const [calcExpr, setCalcExpr] = useState("");
   const [calcError, setCalcError] = useState<string | null>(null);
+  const [calcEditIdx, setCalcEditIdx] = useState<number | null>(null); // conta do histórico que está sendo editada
   const [calcMin, setCalcMin] = useState<Record<string, boolean>>({});
   const [valorFocadoId, setValorFocadoId] = useState<string | null>(null);
   const calcInputRef = useRef<HTMLInputElement>(null);
+  const calcPrefillRef = useRef(""); // texto com que a calculadora abriu (se ninguém mexer, confirmar só fecha)
   const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
     try { return localStorage.getItem("calc_virgula_auto") !== "0"; } catch { return true; }
   });
 
   useEffect(() => {
-    if (calcRow) calcInputRef.current?.focus();
+    if (!calcRow) return;
+    const el = calcInputRef.current;
+    el?.focus();
+    const n = el?.value.length ?? 0;
+    try { el?.setSelectionRange(n, n); } catch { /* ignora */ }
   }, [calcRow]);
 
   useEffect(() => {
@@ -1629,29 +1636,42 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   };
 
   // ── Tabela Manual: calculadora por linha ─────────────
-  const abrirCalcTabela = (blockIdx: number, item: TableItem) => {
+  // editIdx: posição da conta do histórico que será editada (ao tocar nela); sem isso abre com a última conta
+  const abrirCalcTabela = (blockIdx: number, item: TableItem, editIdx?: number) => {
     const hist = item.calc?.historico ?? [];
+    const alvo = editIdx !== undefined && hist[editIdx] ? editIdx : null;
     setCalcError(null);
-    setCalcExpr(hist.length ? hist[hist.length - 1].expressao : "");
+    setCalcEditIdx(alvo);
+    // Abre com o valor que já está na linha (ex.: 835,99 + ) para continuar somando; tocando numa conta do
+    // histórico, abre com aquela conta. Porcentagem ou valor que não vira número abre vazia.
+    const valorAtual = item.valor.trim().replace(/R\$/gi, "").trim();
+    let inicial = "";
+    if (alvo !== null) inicial = hist[alvo].expressao;
+    else if (valorAtual && !tableValorEhPorcentagem(item.valor) && evaluateExpression(valorAtual) !== null) inicial = `${valorAtual} + `;
+    calcPrefillRef.current = inicial;
+    setCalcExpr(inicial);
     setCalcRow({ blockIdx, itemId: item.id });
   };
 
   const fecharCalcTabela = () => {
     setCalcRow(null);
     setCalcError(null);
+    setCalcEditIdx(null);
   };
 
   const confirmarCalcTabela = () => {
     if (!calcRow) return;
     const expr = calcExpr.trim();
-    if (!expr) { fecharCalcTabela(); return; }
+    if (!expr || expr === calcPrefillRef.current.trim()) { fecharCalcTabela(); return; }
     const resultado = evaluateExpression(expr);
     if (resultado === null) {
       setCalcError("Conta inválida. Exemplo: 3.99 + 8.32 + 25.78");
       return;
     }
     const itemAtual = blocks[calcRow.blockIdx]?.tableItems?.find((i) => i.id === calcRow.itemId);
-    const historico = [...(itemAtual?.calc?.historico ?? []), { expressao: expr, resultado }].slice(-10);
+    // Editando uma conta do histórico: ela é substituída (e passa a ser a mais recente); senão, entra uma nova
+    const anteriores = (itemAtual?.calc?.historico ?? []).filter((_, i) => i !== calcEditIdx);
+    const historico = [...anteriores, { expressao: expr, resultado }].slice(-10);
     updateTableItem(calcRow.blockIdx, calcRow.itemId, {
       valor: resultado.toFixed(2).replace(".", ","),
       calc: { historico },
@@ -3430,14 +3450,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   onClick={() => (calcAberta ? fecharCalcTabela() : abrirCalcTabela(idx, item))}
                                   className="rounded"
                                   style={{
-                                    padding: 2, minWidth: 0, justifySelf: "center", lineHeight: 1,
-                                    fontSize: Math.min(tFont * 0.95, 20),
+                                    padding: 3, minWidth: 0, justifySelf: "center", lineHeight: 1,
+                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                    color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
                                     background: calcAberta ? theme.borderAccent : "transparent",
                                   }}
                                   aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
                                   aria-expanded={calcAberta}
                                 >
-                                  🧮
+                                  <Calculator size={Math.min(tFont, 22)} />
                                 </button>
                               )}
                               {!readOnly && (
@@ -3464,7 +3485,12 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     <input
                                       ref={calcInputRef}
                                       value={calcExpr}
-                                      onChange={(e) => { setCalcExpr(calcVirgulaAuto ? aplicarVirgulaAutomatica(e.target.value) : e.target.value); if (calcError) setCalcError(null); }}
+                                      onChange={(e) => {
+                                        // a vírgula automática só age quando você digita no fim da conta (não bagunça números do meio)
+                                        const noFim = e.target.selectionStart === e.target.value.length;
+                                        setCalcExpr(calcVirgulaAuto && noFim ? aplicarVirgulaAutomatica(e.target.value) : e.target.value);
+                                        if (calcError) setCalcError(null);
+                                      }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") { e.preventDefault(); confirmarCalcTabela(); }
                                         else if (e.key === "Escape") { e.preventDefault(); fecharCalcTabela(); }
@@ -3551,11 +3577,26 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   </div>
                                   {!histMinimizado && (
                                     <div style={{ marginTop: 2 }}>
-                                      {[...historicoCalc].reverse().map((h, hi) => (
-                                        <div key={hi} style={{ color: textColor, opacity: 0.8, overflowWrap: "anywhere" }}>
-                                          {h.expressao} = <strong>{formatarMoedaBRL(h.resultado)}</strong>
-                                        </div>
-                                      ))}
+                                      {[...historicoCalc].reverse().map((h, hi) => {
+                                        const origem = historicoCalc.length - 1 - hi;
+                                        const conteudo = <>{h.expressao} = <strong>{formatarMoedaBRL(h.resultado)}</strong></>;
+                                        return readOnly ? (
+                                          <div key={hi} style={{ color: textColor, opacity: 0.8, overflowWrap: "anywhere" }}>{conteudo}</div>
+                                        ) : (
+                                          <button
+                                            key={hi}
+                                            onClick={() => abrirCalcTabela(idx, item, origem)}
+                                            aria-label="Editar esta conta"
+                                            style={{
+                                              display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
+                                              gap: 8, textAlign: "left", padding: "3px 0", color: textColor, opacity: 0.85, overflowWrap: "anywhere",
+                                            }}
+                                          >
+                                            <span style={{ minWidth: 0 }}>{conteudo}</span>
+                                            <Pencil size={Math.min(tFont * 0.75, 14)} style={{ flexShrink: 0, color: theme.textMuted }} />
+                                          </button>
+                                        );
+                                      })}
                                     </div>
                                   )}
                                 </div>
