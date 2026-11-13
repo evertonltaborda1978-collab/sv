@@ -1577,8 +1577,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [calcExpr, setCalcExpr] = useState("");
   const [calcError, setCalcError] = useState<string | null>(null);
   const [calcEditIdx, setCalcEditIdx] = useState<number | null>(null); // conta do histórico que está sendo editada
+  const [pendingClearCalc, setPendingClearCalc] = useState<{ blockIdx: number; itemId: string; label: string; valor: string; total: number } | null>(null);
   const [calcMin, setCalcMin] = useState<Record<string, boolean>>({});
   const [valorFocadoId, setValorFocadoId] = useState<string | null>(null);
+  const [linhaAtivaId, setLinhaAtivaId] = useState<string | null>(null); // linha da tabela com os botões à mostra
   const calcInputRef = useRef<HTMLInputElement>(null);
   const calcPrefillRef = useRef(""); // texto com que a calculadora abriu (se ninguém mexer, confirmar só fecha)
   const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
@@ -1594,7 +1596,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   }, [calcRow]);
 
   useEffect(() => {
-    if (readOnly || !open) setCalcRow(null);
+    if (readOnly || !open) { setCalcRow(null); setLinhaAtivaId(null); }
   }, [readOnly, open]);
 
   // Ao fechar a nota, para a leitura em voz alta
@@ -3355,8 +3357,13 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                           const maiorValor = block.tableItems.reduce((max, it) => Math.max(max, valorParaExibir(it.valor || "", false).length), 4);
                           const checkboxCol = Math.min(tFont, 22) + 8;
                           const valueCol = Math.min(Math.max(56, maiorValor * tFont * 0.62 + 14), 180);
-                          const trashCol = readOnly ? 0 : Math.min(tFont * 0.9, 20) + 10;
-                          const calcCol = readOnly ? 0 : Math.min(tFont, 22) + 10;
+                          // Uma linha só (✓ nome valor). Em edição, tocar numa linha mostra embaixo dela
+                          // os botões da calculadora e da lixeira (só daquela linha).
+                          const acaoBtn = {
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            width: 38, height: 34, borderRadius: 10, lineHeight: 1,
+                            background: isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
+                          } as const;
                           return block.tableItems.map((item) => {
                           const ehPct = tableValorEhPorcentagem(item.valor);
                           const numero = tableValorParaNumero(item.valor);
@@ -3367,11 +3374,13 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                           return (
                             <div
                               key={item.id}
+                              onClick={() => { if (!readOnly) setLinhaAtivaId(item.id); }}
                               className="rounded-xl px-2 py-1.5 w-full"
                               style={{
                                 display: "grid",
-                                gridTemplateColumns: `${checkboxCol}px minmax(0, 1fr) ${valueCol}px${calcCol ? ` ${calcCol}px` : ""}${trashCol ? ` ${trashCol}px` : ""}`,
+                                gridTemplateColumns: `${checkboxCol}px minmax(0, 1fr) ${valueCol}px`,
                                 columnGap: 6,
+                                rowGap: readOnly ? 0 : 6,
                                 alignItems: "center",
                                 background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.025)",
                                 border: `1px solid ${theme.lines}`,
@@ -3380,7 +3389,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                               }}
                             >
                               <button
-                                onClick={() => !readOnly && updateTableItem(idx, item.id, { marcado: !item.marcado })}
+                                onClick={(e) => { e.stopPropagation(); if (!readOnly) updateTableItem(idx, item.id, { marcado: !item.marcado }); }}
                                 style={{ color: item.marcado ? "#4CAF50" : (isDark ? "#888" : "#BDBDBD"), minWidth: 0 }}
                                 disabled={readOnly}
                               >
@@ -3399,7 +3408,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   e.target.style.height = "auto";
                                   e.target.style.height = `${e.target.scrollHeight}px`;
                                 }}
-                                onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; }}
+                                onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; setLinhaAtivaId(item.id); }}
                                 onPaste={handleMobilePaste}
                                 readOnly={readOnly}
                                 rows={1}
@@ -3425,6 +3434,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 onFocus={(e) => {
                                   focusedBlockRef.current = idx; activeFieldRef.current = "content";
                                   setValorFocadoId(item.id);
+                                  setLinhaAtivaId(item.id);
                                   const el = e.target;
                                   requestAnimationFrame(() => { try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignora */ } });
                                 }}
@@ -3445,31 +3455,28 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   width: "100%",
                                 }}
                               />
-                              {!readOnly && (
-                                <button
-                                  onClick={() => (calcAberta ? fecharCalcTabela() : abrirCalcTabela(idx, item))}
-                                  className="rounded"
-                                  style={{
-                                    padding: 3, minWidth: 0, justifySelf: "center", lineHeight: 1,
-                                    display: "flex", alignItems: "center", justifyContent: "center",
-                                    color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
-                                    background: calcAberta ? theme.borderAccent : "transparent",
-                                  }}
-                                  aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
-                                  aria-expanded={calcAberta}
-                                >
-                                  <Calculator size={Math.min(tFont, 22)} />
-                                </button>
-                              )}
-                              {!readOnly && (
-                                <button
-                                  onClick={() => setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" })}
-                                  className="hover:bg-black/5 rounded"
-                                  style={{ color: "#BDBDBD", padding: 2, minWidth: 0, justifySelf: "center" }}
-                                  aria-label="Remover item"
-                                >
-                                  <Trash2 size={Math.min(tFont * 0.9, 20)} />
-                                </button>
+                              {!readOnly && (linhaAtivaId === item.id || calcAberta) && (
+                                <div style={{ gridColumn: "2 / -1", gridRow: 2, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
+                                  <button
+                                    onClick={() => (calcAberta ? fecharCalcTabela() : abrirCalcTabela(idx, item))}
+                                    style={{
+                                      ...acaoBtn,
+                                      color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
+                                      background: calcAberta ? theme.borderAccent : acaoBtn.background,
+                                    }}
+                                    aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
+                                    aria-expanded={calcAberta}
+                                  >
+                                    <Calculator size={20} />
+                                  </button>
+                                  <button
+                                    onClick={() => setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" })}
+                                    style={{ ...acaoBtn, color: "#E57373" }}
+                                    aria-label="Remover item"
+                                  >
+                                    <Trash2 size={18} />
+                                  </button>
+                                </div>
                               )}
 
                               {/* Calculadora da linha: abre ao tocar no 🧮 e some ao confirmar (Enter ou ✓) */}
@@ -3567,13 +3574,24 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 >
                                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                                     <span style={{ color: theme.textMuted }}>Conta ({historicoCalc.length})</span>
-                                    <button
-                                      onClick={() => setCalcMin((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
-                                      aria-expanded={!histMinimizado}
-                                      style={{ color: theme.borderAccent, fontWeight: 600, padding: "2px 6px" }}
-                                    >
-                                      {histMinimizado ? "▸ Maximizar" : "▾ Minimizar"}
-                                    </button>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                      {!readOnly && (
+                                        <button
+                                          onClick={() => setPendingClearCalc({ blockIdx: idx, itemId: item.id, label: item.nome || "esse item", valor: valorParaExibir(item.valor, false), total: historicoCalc.length })}
+                                          aria-label="Excluir histórico da conta"
+                                          style={{ display: "flex", alignItems: "center", gap: 3, color: "#E53935", fontWeight: 600, padding: "2px 6px" }}
+                                        >
+                                          <Trash2 size={Math.min(tFont * 0.75, 14)} /> Excluir
+                                        </button>
+                                      )}
+                                      <button
+                                        onClick={() => setCalcMin((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
+                                        aria-expanded={!histMinimizado}
+                                        style={{ color: theme.borderAccent, fontWeight: 600, padding: "2px 6px" }}
+                                      >
+                                        {histMinimizado ? "▸ Maximizar" : "▾ Minimizar"}
+                                      </button>
+                                    </div>
                                   </div>
                                   {!histMinimizado && (
                                     <div style={{ marginTop: 2 }}>
@@ -4346,6 +4364,43 @@ ${blocksToPlainText(blocks)}`.trim();
                     if (pendingDeleteItem.type === "table") removeTableItem(pendingDeleteItem.blockIdx, pendingDeleteItem.itemId);
                     else removeChecklistItem(pendingDeleteItem.blockIdx, pendingDeleteItem.itemId);
                     setPendingDeleteItem(null);
+                  }}
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: "#E53935", color: "#FFF", fontWeight: 600, fontSize: 13 }}
+                >
+                  Excluir
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {pendingClearCalc && (
+          <div
+            className="absolute inset-0 z-[90] flex items-center justify-center p-5"
+            style={{ background: "rgba(0,0,0,0.5)" }}
+            onClick={() => setPendingClearCalc(null)}
+          >
+            <div
+              className="w-full"
+              style={{ maxWidth: 320, background: theme.card, borderRadius: 18, padding: 20 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <p style={{ fontWeight: 700, fontSize: 15, color: theme.text, margin: "0 0 6px" }}>Excluir histórico da conta?</p>
+              <p style={{ fontSize: 13, color: theme.textMuted, margin: "0 0 16px" }}>
+                {pendingClearCalc.total === 1 ? "A conta" : `As ${pendingClearCalc.total} contas`} de "{pendingClearCalc.label}" {pendingClearCalc.total === 1 ? "será apagada" : "serão apagadas"}.
+                {pendingClearCalc.valor ? ` O valor ${pendingClearCalc.valor} continua na linha.` : ""} Essa ação não pode ser desfeita.
+              </p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setPendingClearCalc(null)}
+                  style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: isDark ? "#333" : "#F0F0F0", color: theme.text, fontWeight: 600, fontSize: 13 }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={() => {
+                    updateTableItem(pendingClearCalc.blockIdx, pendingClearCalc.itemId, { calc: undefined });
+                    setPendingClearCalc(null);
                   }}
                   style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: "#E53935", color: "#FFF", fontWeight: 600, fontSize: 13 }}
                 >
