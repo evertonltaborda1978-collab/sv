@@ -29,6 +29,7 @@ export function useAppointments() {
     const { data } = await supabase
       .from("appointments")
       .select("*")
+      .eq("user_id", user.id) // só os compromissos desta conta (além da proteção do banco)
       .order("date", { ascending: true });
 
     if (data) {

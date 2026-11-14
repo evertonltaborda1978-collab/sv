@@ -206,6 +206,18 @@ function mergeNotes(local: Note[], remote: Note[]): Note[] {
   return Array.from(map.values()).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
 }
 
+// Notas que já estavam sincronizadas, mas que o servidor não devolve mais para ESTA conta, são
+// cópias de outra conta (ficaram no aparelho de quando as regras do banco ainda deixavam ler tudo)
+// ou notas apagadas de vez em outro aparelho: saem da cópia local. Nunca mexe em nota com mudança
+// pendente (sincronizado: false), nem em nota mexida nos últimos 10 minutos (pode ter acabado de
+// subir), nem quando o servidor devolveu a lista cheia (pode estar cortada).
+const LIMITE_LISTA_SERVIDOR = 1000;
+function podarCopiasSemDono(lista: Note[], idsServidor: Set<string>, inicioDownload: number, totalServidor: number): Note[] {
+  if (totalServidor >= LIMITE_LISTA_SERVIDOR) return lista;
+  const corte = inicioDownload - 10 * 60_000;
+  return lista.filter((n) => !n.sincronizado || idsServidor.has(n.id) || n.updatedAt.getTime() > corte);
+}
+
 function mapRow(n: any): Note {
   return {
     id: n.id,
@@ -708,8 +720,10 @@ export function useNotes() {
 
     try {
       // Lista SEM as fotos (leve). As fotos entram só para notas novas/alteradas.
+      const inicioDownload = Date.now();
       const { data, error } = await (supabase.from("notes") as any)
         .select(COLUNAS_LISTA)
+        .eq("user_id", user.id) // só as notas desta conta (além da proteção do banco)
         .order("updated_at", { ascending: false });
 
       if (error) throw error;
@@ -767,6 +781,8 @@ export function useNotes() {
         .filter((n) => !semCorpo.has(n.id) && (!precisamCorpo.includes(n.id) || corpoPorId.has(n.id)))
         .map((n) => (corpoPorId.has(n.id) ? { ...n, content: corpoPorId.get(n.id)!.content, images: corpoPorId.get(n.id)!.images } : n));
       remoteNotes.forEach((n) => serverSeenRef.current.set(n.id, n.updatedAt.getTime()));
+      const idsNoServidor = new Set(((data as any[]) || []).map((r) => r.id as string));
+      const totalNoServidor = ((data as any[]) || []).length;
 
       // Mescla contra o estado ATUAL de verdade (via a forma funcional),
       // nunca contra a "localNotes" capturada lá em cima antes de esperar
@@ -775,13 +791,20 @@ export function useNotes() {
       // mesclasse contra aquela foto antiga, a mudança fresca da pessoa
       // seria apagada por cima assim que essa busca terminasse.
       let mergedResult: Note[] = localNotes;
+      let removidasDaCopia = 0;
       setNotesAndRef((prev) => {
-        const novo = mergeNotes(prev, remoteNotes);
+        const mesclado = mergeNotes(prev, remoteNotes);
+        const novo = podarCopiasSemDono(mesclado, idsNoServidor, inicioDownload, totalNoServidor);
+        removidasDaCopia = mesclado.length - novo.length;
         // Nada mudou? Mantém a MESMA lista (sem redesenhar a tela nem regravar o cache).
         mergedResult = assinaturaNotas(user.id, novo) === assinaturaNotas(user.id, prev) ? prev : novo;
         return mergedResult;
       });
       gravarCache(user.id, mergedResult);
+      if (removidasDaCopia > 0) {
+        // Também descarta o backup automático guardado no aparelho, que pode ter essas notas.
+        try { localStorage.removeItem(getLocalKey(user.id) + "_auto_backup"); } catch {}
+      }
       if (marcasAbertura.servidorOk === undefined) marcasAbertura.servidorOk = agoraMs();
 
       // Sync any local-only notes
