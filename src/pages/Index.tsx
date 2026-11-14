@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { lazy, Suspense } from "react";
 import AdminPanel from "./AdminPanel";
+import PendingLicenseAlert from "@/components/PendingLicenseAlert";
 import { BottomNav } from "@/components/BottomNav";
 import { NotesView } from "@/components/NotesView";
 import { SnoozeAlert } from "@/components/SnoozeAlert";
@@ -757,6 +758,8 @@ const Index = () => {
           <AdminPanel onClose={() => setShowAdmin(false)} />
         </div>
       )}
+      {/* Aviso de pedidos de licença aguardando decisão (só para o administrador) */}
+      {isAdmin && !showAdmin && <PendingLicenseAlert onOpenPanel={() => setShowAdmin(true)} />}
       <PixDialog open={showPix} onClose={() => setShowPix(false)} />
       {/* Bottom Navigation */}
       <BottomNav active={tab} onChange={changeTab} permissions={permissions} />
