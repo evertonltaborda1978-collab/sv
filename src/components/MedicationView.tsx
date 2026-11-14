@@ -5,6 +5,7 @@ import { toast } from "@/hooks/use-toast";
 import { ALERT_SOUND_OPTIONS, playAlertSoundPreview, type AlertSoundId } from "@/lib/alertSound";
 import { NativeAlarmSoundPicker, type NativeSoundValue } from "./NativeAlarmSoundPicker";
 import { HealthVisitsView } from "./HealthVisitsView";
+import { HealthBackupPanel } from "./HealthBackupPanel";
 import type { MedPrefill } from "@/lib/healthLink";
 import { FamilyView } from "./FamilyView";
 import { useFamilyLinks } from "@/hooks/useFamilyLinks";
@@ -367,6 +368,7 @@ export function MedicationView() {
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileIcon, setNewProfileIcon] = useState("👨");
   const [showSizePanel, setShowSizePanel] = useState(false);
+  const [showBackupPanel, setShowBackupPanel] = useState(false);
   const [tab, setTab] = useState<"remedios" | "atendimentos" | "familia">("remedios");
   const [medsLoaded, setMedsLoaded] = useState(false);
   const { links, refresh: refreshLinks } = useFamilyLinks(user?.id);
@@ -1030,7 +1032,13 @@ export function MedicationView() {
           style={{ minWidth: 48, height: 48, borderRadius: 12, border: showSizePanel ? "2px solid #1A1A2E" : "1px solid var(--color-border-secondary)", background: showSizePanel ? "rgba(26,26,46,0.06)" : "transparent", cursor: "pointer", fontSize: 16, fontWeight: 700, color: "var(--color-text-primary)" }}>
           Aa
         </button>
+        <button onClick={() => setShowBackupPanel(v => !v)} aria-label="Backup da Saúde"
+          style={{ minWidth: 48, height: 48, borderRadius: 12, border: showBackupPanel ? "2px solid #1A1A2E" : "1px solid var(--color-border-secondary)", background: showBackupPanel ? "rgba(26,26,46,0.06)" : "transparent", cursor: "pointer", fontSize: 18, color: "var(--color-text-primary)" }}>
+          💾
+        </button>
       </div>
+
+      {showBackupPanel && <HealthBackupPanel scale={scale} />}
 
       {showSizePanel && (
         <div style={{ background: "var(--color-background-secondary)", borderRadius: 14, padding: 12, marginBottom: 12 }}>
