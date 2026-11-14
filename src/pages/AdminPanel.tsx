@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { useLicense } from "@/hooks/useLicense";
 import {
   APP_NAME,
@@ -9,9 +10,12 @@ import {
   MODULE_ORDER,
   adminGenerateKey,
   adminList,
+  adminPhones,
   adminSetStatus,
   adminUpdateModules,
   normalizeModules,
+  showPhone,
+  whatsappLink,
   type LicenseRow,
   type Modules,
 } from "@/lib/license";
@@ -59,6 +63,8 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [phones, setPhones] = useState<Record<string, string>>({});
+  const [copiedMsg, setCopiedMsg] = useState(false);
   const [showAlert, setShowAlert] = useState(false);
 
   // modal de chave
@@ -81,6 +87,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     try {
       const data = await adminList();
       setRows(data);
+      adminPhones().then(setPhones);
       const waiting = data.filter((r) => r.status === "pending" && !r.key_generated_at).length;
       if (waiting > 0 && !sessionStorage.getItem(ALERT_FLAG)) {
         sessionStorage.setItem(ALERT_FLAG, "1");
@@ -144,8 +151,9 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const mailtoHref = () => {
-    if (!target || !generated) return "#";
+  // Texto da chave (o mesmo para e-mail, WhatsApp e "copiar mensagem")
+  const keyMessage = () => {
+    if (!target || !generated) return { subject: "", body: "" };
     const subject = `Sua chave de ativação do ${APP_NAME}`;
     const body =
       `Olá, ${target.name.split(" ")[0]}!\n\n` +
@@ -157,7 +165,30 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
       `3. Digite seu e-mail (${target.email}) e a chave acima\n` +
       `4. Crie sua senha definitiva\n\n` +
       `A chave só funciona uma vez.`;
-    return `mailto:${encodeURIComponent(target.email)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+    return { subject, body };
+  };
+
+  // No app (Android) abre o programa de e-mail do celular; no computador abre o Gmail no navegador
+  // (um link mailto: sozinho não faz nada quando o computador não tem programa de e-mail).
+  const sendEmail = () => {
+    if (!target || !generated) return;
+    const { subject, body } = keyMessage();
+    if (Capacitor.isNativePlatform()) {
+      window.location.href = `mailto:${target.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      return;
+    }
+    window.open(
+      `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(target.email)}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+      "_blank",
+      "noopener",
+    );
+  };
+
+  const sendWhatsApp = () => {
+    if (!target || !generated) return;
+    const phone = phones[target.id];
+    if (!phone) return;
+    window.open(whatsappLink(phone, keyMessage().body), "_blank", "noopener");
   };
 
   const changeStatus = async (r: LicenseRow, action: "block" | "unblock" | "hold") => {
@@ -226,6 +257,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                   <td className="px-2 py-3">
                     <div className="font-medium">{r.name}</div>
                     <div className="break-all text-xs text-muted-foreground">{r.email}</div>
+                    {phones[r.id] && <div className="text-xs text-muted-foreground">📱 {showPhone(phones[r.id])}</div>}
                     <div className="text-xs text-muted-foreground">Pedido em {fmt(r.created_at)}</div>
                   </td>
                   <td className="px-2 py-3">
@@ -413,12 +445,38 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                 >
                   {copied ? "✓ Chave copiada!" : "Copiar chave"}
                 </button>
-                <a
-                  href={mailtoHref()}
+                {phones[target.id] ? (
+                  <button
+                    className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
+                    onClick={sendWhatsApp}
+                  >
+                    Enviar por WhatsApp ({showPhone(phones[target.id])})
+                  </button>
+                ) : (
+                  <p className="text-center text-xs text-muted-foreground">
+                    Este cliente não tem telefone cadastrado para o WhatsApp.
+                  </p>
+                )}
+                <button
                   className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
+                  onClick={sendEmail}
                 >
                   Enviar por e-mail
-                </a>
+                </button>
+                <button
+                  className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
+                  onClick={async () => {
+                    if (await copyText(keyMessage().body)) {
+                      setCopiedMsg(true);
+                      setTimeout(() => setCopiedMsg(false), 2200);
+                    }
+                  }}
+                >
+                  {copiedMsg ? "✓ Mensagem copiada!" : "Copiar mensagem completa"}
+                </button>
+                <p className="text-center text-xs text-muted-foreground">
+                  Se o e-mail não abrir, use "Copiar mensagem completa" e cole onde preferir.
+                </p>
                 <button className="w-full text-center text-sm text-muted-foreground underline" onClick={closeKeyModal}>
                   Fechar
                 </button>

@@ -9,8 +9,8 @@ import { useBiometricAuth } from "@/hooks/useBiometricAuth";
 import { useVersionCheck } from "@/hooks/useVersionCheck";
 import { APP_VERSION, VERSION_HISTORY, forceUpdateApp } from "@/lib/appVersion";
 import PixSupport from "@/components/PixSupport";
-import { APP_NAME, BLOCK_MESSAGES, activateLicense, checkKey, getMyLicense, registerDevice, requestLicense } from "@/lib/license";
-import { Mail, Lock, User, Eye, EyeOff, Fingerprint, HelpCircle, X, RotateCcw, KeyRound } from "lucide-react";
+import { ADMIN_WHATSAPP, APP_NAME, BLOCK_MESSAGES, activateLicense, checkKey, formatPhoneBR, getMyLicense, isValidPhoneBR, registerDevice, requestLicense, whatsappLink } from "@/lib/license";
+import { Mail, Lock, User, Eye, EyeOff, Fingerprint, HelpCircle, X, RotateCcw, KeyRound, Phone } from "lucide-react";
 
 // Alguns erros vêm crus e técnicos direto do navegador (ex: "Failed to
 // fetch", quando não tem internet de verdade pra completar o login no
@@ -45,6 +45,8 @@ export default function Auth() {
   const [keyValidated, setKeyValidated] = useState(false);
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
+  const [sentInfo, setSentInfo] = useState<{ name: string; email: string; phone: string } | null>(null);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -99,6 +101,7 @@ export default function Auth() {
 
   const changeMode = (m: "login" | "request" | "activate") => {
     setMode(m);
+    setSentInfo(null);
     setForgotPassword(false);
     setPassword("");
     setConfirmPassword("");
@@ -133,13 +136,23 @@ export default function Auth() {
 
       // 1) Obter Licença: só nome + e-mail; o pedido fica Pendente no servidor.
       if (mode === "request") {
-        await requestLicense(fullName, email);
+        if (!isValidPhoneBR(phone)) {
+          toast({
+            title: "Telefone inválido",
+            description: "Digite o DDD e o número, por exemplo (42) 99999-9999.",
+            variant: "destructive",
+          });
+          setLoading(false);
+          return;
+        }
+        await requestLicense(fullName, email, phone);
         toast({
           title: "Pedido enviado!",
           description: "Assim que o administrador liberar, você recebe a chave de ativação. Depois use a aba Ativar.",
         });
         setFullName("");
-        changeMode("activate");
+        setPhone("");
+        setSentInfo({ name: fullName.trim(), email: email.trim().toLowerCase(), phone });
         setLoading(false);
         return;
       }
@@ -305,8 +318,41 @@ export default function Auth() {
           </div>
         )}
 
+        {/* Depois do pedido: o cliente pode avisar o administrador pelo WhatsApp */}
+        {sentInfo && (
+          <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4 text-center">
+            <p className="font-semibold">✅ Pedido enviado!</p>
+            <p className="text-sm text-muted-foreground">
+              Para agilizar, avise o administrador pelo WhatsApp. É só tocar no botão e depois em enviar.
+            </p>
+            <Button
+              type="button"
+              className="w-full"
+              onClick={() =>
+                window.open(
+                  whatsappLink(
+                    ADMIN_WHATSAPP,
+                    `Olá! Acabei de pedir a licença do ${APP_NAME}.\nNome: ${sentInfo.name}\nE-mail: ${sentInfo.email}\nTelefone: ${formatPhoneBR(sentInfo.phone)}`,
+                  ),
+                  "_blank",
+                  "noopener",
+                )
+              }
+            >
+              Avisar o administrador pelo WhatsApp
+            </Button>
+            <button
+              type="button"
+              className="w-full text-sm text-muted-foreground underline"
+              onClick={() => changeMode("activate")}
+            >
+              Continuar para a ativação
+            </button>
+          </div>
+        )}
+
         {/* Form */}
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className={sentInfo ? "hidden" : "space-y-4"}>
           {mode === "request" && !forgotPassword && (
             <div className="relative">
               <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -336,6 +382,23 @@ export default function Auth() {
               disabled={mode === "activate" && keyValidated}
             />
           </div>
+          {mode === "request" && !forgotPassword && (
+            <div className="relative">
+              <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="tel"
+                inputMode="tel"
+                placeholder="Telefone com DDD (WhatsApp)"
+                value={phone}
+                onChange={(e) => setPhone(formatPhoneBR(e.target.value))}
+                className="pl-10"
+                autoComplete="tel-national"
+                name="phone"
+                maxLength={15}
+                required
+              />
+            </div>
+          )}
           {mode === "activate" && !forgotPassword && (
             <div className="relative">
               <KeyRound size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />

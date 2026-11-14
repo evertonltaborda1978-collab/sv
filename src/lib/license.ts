@@ -8,6 +8,7 @@ export const APP_SHORT = "Secretária";
 export const APP_URL = "https://evertonltaborda1978-collab.github.io/sv/";
 export const ADMIN_EMAIL = "evertonltaborda@gmail.com"; // painel e acesso total
 export const BACKOFFICE_EMAIL = "evertontab@gmail.com"; // só PIX/licenças, não entra no app
+export const ADMIN_WHATSAPP = "5542999475221"; // WhatsApp do administrador (só dígitos, com o 55)
 
 export type LicenseStatus = "pending" | "active" | "blocked" | "on_hold" | "none" | "backoffice";
 
@@ -103,10 +104,60 @@ export function getDeviceId(): string {
   }
 }
 
+// ---------- Telefone ----------
+export const phoneDigits = (v: string) => v.replace(/\D/g, "");
+
+/** Máscara (42) 99999-9999 enquanto digita (10 ou 11 dígitos). */
+export function formatPhoneBR(v: string): string {
+  const d = phoneDigits(v).slice(0, 11);
+  if (d.length <= 2) return d.length ? `(${d}` : "";
+  if (d.length <= 6) return `(${d.slice(0, 2)}) ${d.slice(2)}`;
+  if (d.length <= 10) return `(${d.slice(0, 2)}) ${d.slice(2, 6)}-${d.slice(6)}`;
+  return `(${d.slice(0, 2)}) ${d.slice(2, 7)}-${d.slice(7)}`;
+}
+
+/** Telefone brasileiro com DDD: 10 dígitos (fixo) ou 11 (celular, começando com 9). */
+export function isValidPhoneBR(v: string): boolean {
+  const d = phoneDigits(v);
+  if (d.length !== 10 && d.length !== 11) return false;
+  if (d[0] === "0" || d[1] === "0") return false;
+  return d.length === 10 || d[2] === "9";
+}
+
+/** Texto do telefone para mostrar na tela (aceita número guardado com o 55 na frente). */
+export function showPhone(v: string): string {
+  const d = phoneDigits(v);
+  return d.length > 11 ? `+${d}` : formatPhoneBR(d);
+}
+
+/** Link que abre o WhatsApp já com a mensagem escrita. */
+export function whatsappLink(phone: string, text: string): string {
+  let d = phoneDigits(phone);
+  if (d.length <= 11) d = "55" + d;
+  return `https://wa.me/${d}?text=${encodeURIComponent(text)}`;
+}
+
 // ---------- Usuário ----------
-export async function requestLicense(name: string, email: string): Promise<void> {
+export async function requestLicense(name: string, email: string, phone?: string): Promise<void> {
   const { error } = await sb.rpc("request_license", { p_name: name, p_email: email });
   if (error) throw new Error(error.message?.includes("inválido") ? error.message : "Não foi possível enviar o pedido.");
+
+  // Telefone e aviso ao administrador: melhor esforço. Se o SQL 08 ou a função de aviso
+  // ainda não estiverem instalados, o pedido continua valendo normalmente.
+  const clean = email.trim().toLowerCase();
+  const digits = phoneDigits(phone ?? "");
+  if (digits) {
+    try {
+      await sb.rpc("set_license_phone", { p_email: clean, p_phone: digits });
+    } catch {
+      /* segue sem o telefone */
+    }
+  }
+  try {
+    await supabase.functions.invoke("notify-license", { body: { email: clean } });
+  } catch {
+    /* o administrador ainda vê o pedido no painel */
+  }
 }
 
 async function callLicenseFn(body: Record<string, string>) {
@@ -141,6 +192,19 @@ export async function adminList(): Promise<LicenseRow[]> {
   const { data, error } = await sb.rpc("admin_list_licenses");
   if (error) throw new Error(error.message);
   return (data ?? []).map((r: any) => ({ ...r, device_count: Number(r.device_count) }));
+}
+
+/** Telefones dos clientes (id da licença -> dígitos). Vazio se o SQL 08 ainda não foi rodado. */
+export async function adminPhones(): Promise<Record<string, string>> {
+  try {
+    const { data, error } = await sb.rpc("admin_license_phones");
+    if (error || !Array.isArray(data)) return {};
+    const out: Record<string, string> = {};
+    for (const r of data as any[]) if (r?.id && r?.phone) out[r.id] = String(r.phone);
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export async function adminGenerateKey(id: string, modules: Modules): Promise<string> {
