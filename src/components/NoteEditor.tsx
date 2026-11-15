@@ -3404,10 +3404,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                               className="rounded-xl px-2 py-1.5 w-full"
                               style={{
                                 display: "grid",
-                                // Em edição: ✓ | nome | 🧮 | valor | 🗑 (calculadora à esquerda do valor e lixeira na extrema direita)
+                                // Em edição: ✓ | nome | [🧮 valor] | 🗑 — a calculadora fica colada no valor, com o mesmo espaço (6 px) que separa o valor da lixeira
                                 gridTemplateColumns: readOnly
                                   ? `${checkboxCol}px minmax(0, 1fr) ${valueCol}px`
-                                  : `${checkboxCol}px minmax(0, 1fr) ${acaoBtn.width}px ${valueCol}px ${acaoBtn.width}px`,
+                                  : `${checkboxCol}px minmax(0, 1fr) max-content ${acaoBtn.width}px`,
                                 columnGap: 6,
                                 rowGap: readOnly ? 0 : 6,
                                 alignItems: "center",
@@ -3463,7 +3463,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 className="bg-transparent border-0 outline-none font-medium resize-none overflow-hidden"
                                 style={{ color: textColor, opacity: item.marcado ? 1 : 0.6, fontSize: tFont, lineHeight: `${tFont * 1.3}px`, fontFamily: "inherit", minWidth: 0, width: "100%" }}
                               />
-                              {/* Calculadora: à esquerda do valor (só em edição) */}
+                              {/* Calculadora + valor juntos: a calculadora fica colada no valor (só em edição) */}
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, minWidth: 0 }}>
                               {!readOnly && (
                                 <button
                                   onClick={(e) => {
@@ -3528,9 +3529,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   lineHeight: `${tFont * 1.3}px`,
                                   fontFamily: "inherit",
                                   minWidth: 0,
-                                  width: "100%",
+                                  // Em edição o campo tem só a largura do que está escrito (assim a calculadora fica
+                                  // colada nele); usa o maior entre o texto formatado e o digitado para não "pular" ao focar.
+                                  width: readOnly
+                                    ? "100%"
+                                    : `${Math.min(Math.max(Math.max(valorParaExibir(item.valor || "", false).length, (item.valor || "").length, 5) * tFont * 0.62 + 16, 48), 180)}px`,
+                                  flexShrink: 0,
                                 }}
                               />
+                              </div>
                               {/* Lixeira: na extrema direita da linha (só em edição) */}
                               {!readOnly && (
                                 <button
