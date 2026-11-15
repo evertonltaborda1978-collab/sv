@@ -1,9 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
+import { TextToSpeech } from "@capacitor-community/text-to-speech";
 import { prepareForSpeech, splitForSpeech } from "@/lib/noteText";
 
 const LANG = "pt-BR";
 
-const isSupported = (): boolean =>
+/** true quando o app roda dentro do Android/iOS empacotado pelo Capacitor. */
+const isNative = (): boolean => {
+  try {
+    return Capacitor.isNativePlatform();
+  } catch {
+    return false;
+  }
+};
+
+const isWebSupported = (): boolean =>
   typeof window !== "undefined" &&
   "speechSynthesis" in window &&
   "SpeechSynthesisUtterance" in window;
@@ -34,25 +45,34 @@ function pickVoice(): VoicePick {
   return { voice: null, missingOfflineVoice: true };
 }
 
+const MSG_VOICE_MISSING =
+  "Voz em Português (Brasil) indisponível. No Android: Configurações > Sistema > Idioma > Saída de texto para fala > instale a voz pt-BR.";
+const MSG_GENERIC_ERROR = "Não foi possível ler em voz alta agora.";
+
 export function useSpeech() {
-  const supported = isSupported();
+  const native = isNative();
+  const supported = native || isWebSupported();
   const [speaking, setSpeaking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const runRef = useRef(0); // invalida callbacks de leituras antigas
 
-  // Força o carregamento da lista de vozes (alguns aparelhos carregam tarde).
+  // Força o carregamento da lista de vozes no navegador (alguns aparelhos carregam tarde).
   useEffect(() => {
-    if (!supported) return;
+    if (native || !isWebSupported()) return;
     try {
       window.speechSynthesis.getVoices();
     } catch {
       /* ignora */
     }
-  }, [supported]);
+  }, [native]);
 
   const stop = useCallback(() => {
     runRef.current += 1;
-    if (isSupported()) {
+    if (isNative()) {
+      TextToSpeech.stop().catch(() => {
+        /* ignora */
+      });
+    } else if (isWebSupported()) {
       try {
         window.speechSynthesis.cancel();
       } catch {
@@ -65,22 +85,42 @@ export function useSpeech() {
   // Para a fala ao sair da nota.
   useEffect(() => stop, [stop]);
 
-  const speak = useCallback((rawText: string): boolean => {
-    setMessage(null);
+  /** Leitura pelo motor de voz nativo do Android (plugin do Capacitor). */
+  const speakNative = useCallback((chunks: string[], myRun: number) => {
+    setSpeaking(true);
 
-    if (!isSupported()) {
-      setMessage("A leitura em voz alta não está disponível neste aparelho.");
-      return false;
-    }
+    void (async () => {
+      try {
+        for (const chunk of chunks) {
+          if (runRef.current !== myRun) return;
+          // speak() só resolve quando o trecho termina de ser falado.
+          await TextToSpeech.speak({
+            text: chunk,
+            lang: LANG,
+            rate: 1.0,
+            pitch: 1.0,
+            volume: 1.0,
+            category: "ambient",
+          });
+        }
+        if (runRef.current === myRun) setSpeaking(false);
+      } catch (err) {
+        if (runRef.current !== myRun) return; // foi cancelada de propósito
+        runRef.current += 1;
+        setSpeaking(false);
+        const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
+        setMessage(
+          txt.includes("language") || txt.includes("lang") || txt.includes("voice")
+            ? MSG_VOICE_MISSING
+            : MSG_GENERIC_ERROR
+        );
+      }
+    })();
+  }, []);
 
-    const text = prepareForSpeech(rawText);
-    if (!text) {
-      setMessage("Esta nota não tem texto para ler.");
-      return false;
-    }
-
+  /** Leitura pelo speechSynthesis do navegador (PWA / computador). */
+  const speakWeb = useCallback((chunks: string[], myRun: number) => {
     const synth = window.speechSynthesis;
-    const myRun = ++runRef.current;
 
     // Limpa a fila antes de falar.
     try {
@@ -96,7 +136,6 @@ export function useSpeech() {
       );
     }
 
-    const chunks = splitForSpeech(text);
     setSpeaking(true);
 
     // Alguns Androids ignoram speak() logo após cancel(); um respiro curto resolve.
@@ -126,8 +165,8 @@ export function useSpeech() {
           setSpeaking(false);
           setMessage(
             e.error === "language-unavailable" || e.error === "voice-unavailable"
-              ? "Voz em Português (Brasil) indisponível. Instale-a nas configurações de texto para fala do Android."
-              : "Não foi possível ler em voz alta agora."
+              ? MSG_VOICE_MISSING
+              : MSG_GENERIC_ERROR
           );
         };
 
@@ -136,14 +175,48 @@ export function useSpeech() {
         } catch {
           if (runRef.current === myRun) {
             setSpeaking(false);
-            setMessage("Não foi possível ler em voz alta agora.");
+            setMessage(MSG_GENERIC_ERROR);
           }
         }
       });
     }, 80);
-
-    return true;
   }, []);
+
+  const speak = useCallback(
+    (rawText: string): boolean => {
+      setMessage(null);
+
+      if (!supported) {
+        setMessage("A leitura em voz alta não está disponível neste aparelho.");
+        return false;
+      }
+
+      const text = prepareForSpeech(rawText);
+      if (!text) {
+        setMessage("Esta nota não tem texto para ler.");
+        return false;
+      }
+
+      const chunks = splitForSpeech(text);
+      const myRun = ++runRef.current;
+
+      if (native) {
+        // Interrompe qualquer fala anterior antes de começar a nova.
+        TextToSpeech.stop()
+          .catch(() => {
+            /* ignora */
+          })
+          .finally(() => {
+            if (runRef.current === myRun) speakNative(chunks, myRun);
+          });
+      } else {
+        speakWeb(chunks, myRun);
+      }
+
+      return true;
+    },
+    [supported, native, speakNative, speakWeb]
+  );
 
   const toggle = useCallback(
     (text: string) => {

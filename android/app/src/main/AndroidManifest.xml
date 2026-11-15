@@ -76,6 +76,15 @@
         </provider>
     </application>
 
+    <!-- Leitura em voz alta (Text-to-Speech): a partir do Android 11 o app precisa
+         declarar que consulta o mecanismo de voz do sistema. Sem este bloco a
+         leitura das notas pode falhar mesmo com o plugin instalado. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
