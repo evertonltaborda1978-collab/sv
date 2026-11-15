@@ -1583,6 +1583,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [linhaAtivaId, setLinhaAtivaId] = useState<string | null>(null); // linha da tabela com os botões à mostra
   const calcInputRef = useRef<HTMLInputElement>(null);
   const calcPrefillRef = useRef(""); // texto com que a calculadora abriu (se ninguém mexer, confirmar só fecha)
+  // Tabela Manual: foco automático no nome da linha recém-inserida e navegação Enter (nome → valor → nova linha)
+  const novoItemFocoRef = useRef<string | null>(null);
+  const nomeRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const valorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
     try { return localStorage.getItem("calc_virgula_auto") !== "0"; } catch { return true; }
   });
@@ -2177,6 +2181,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const addTable = () => {
     const idx = focusedBlockRef.current;
     const newItem: TableItem = { id: crypto.randomUUID(), nome: "", valor: "", marcado: true };
+    novoItemFocoRef.current = newItem.id; // o campo Nome da linha nova já abre focado
     setBlocks((prev) => {
       const next = [...prev];
       // Se o bloco atual já é uma tabela, adiciona item nela
@@ -2229,6 +2234,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
   const addTableItemAfter = (blockIdx: number) => {
     const newItem: TableItem = { id: crypto.randomUUID(), nome: "", valor: "", marcado: true };
+    novoItemFocoRef.current = newItem.id; // o campo Nome da linha nova já abre focado
     setBlocks((prev) => {
       const next = [...prev];
       if (next[blockIdx]?.type === "table" && next[blockIdx].tableItems) {
@@ -2236,6 +2242,26 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       }
       return next;
     });
+  };
+
+  // Enter no campo Valor: lança a linha (o valor já fica salvo ao digitar) e abre uma linha nova
+  // com o foco no Nome. Se a última linha da tabela já está vazia, só leva o foco até ela
+  // (não cria linhas vazias repetidas).
+  const confirmarValorTabela = (blockIdx: number, itemId: string) => {
+    const itens = blocks[blockIdx]?.tableItems ?? [];
+    const atual = itens.find((it) => it.id === itemId);
+    const ultima = itens[itens.length - 1];
+    const vazia = (it?: TableItem) => !!it && !it.nome.trim() && !(it.valor ?? "").trim();
+    if (vazia(atual)) {
+      // linha ainda vazia: não cria outra, apenas volta para o Nome dela
+      nomeRefs.current[itemId]?.focus();
+      return;
+    }
+    if (ultima && ultima.id !== itemId && vazia(ultima)) {
+      nomeRefs.current[ultima.id]?.focus();
+      return;
+    }
+    addTableItemAfter(blockIdx);
   };
 
   const updateTableTitle = (blockIdx: number, title: string) => {
@@ -3361,7 +3387,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                           // os botões da calculadora e da lixeira (só daquela linha).
                           const acaoBtn = {
                             display: "flex", alignItems: "center", justifyContent: "center",
-                            width: 38, height: 34, borderRadius: 10, lineHeight: 1,
+                            width: 32, height: 32, borderRadius: 10, lineHeight: 1,
                             background: isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
                           } as const;
                           return block.tableItems.map((item) => {
@@ -3378,12 +3404,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                               className="rounded-xl px-2 py-1.5 w-full"
                               style={{
                                 display: "grid",
-                                gridTemplateColumns: `${checkboxCol}px minmax(0, 1fr) ${valueCol}px`,
+                                // Em edição: ✓ | nome | 🧮 | valor | 🗑 (calculadora à esquerda do valor e lixeira na extrema direita)
+                                gridTemplateColumns: readOnly
+                                  ? `${checkboxCol}px minmax(0, 1fr) ${valueCol}px`
+                                  : `${checkboxCol}px minmax(0, 1fr) ${acaoBtn.width}px ${valueCol}px ${acaoBtn.width}px`,
                                 columnGap: 6,
                                 rowGap: readOnly ? 0 : 6,
                                 alignItems: "center",
                                 background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.025)",
-                                border: `1px solid ${theme.lines}`,
+                                border: `1px solid ${!readOnly && linhaAtivaId === item.id ? theme.borderAccent : theme.lines}`,
                                 boxSizing: "border-box",
                                 maxWidth: "100%",
                               }}
@@ -3397,9 +3426,26 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                               </button>
                               <textarea
                                 ref={(el) => {
+                                  nomeRefs.current[item.id] = el;
                                   if (el) {
                                     el.style.height = "auto";
                                     el.style.height = `${el.scrollHeight}px`;
+                                    // Linha recém-inserida: foco automático no Nome, com o cursor pronto para digitar
+                                    if (novoItemFocoRef.current === item.id && !readOnly) {
+                                      novoItemFocoRef.current = null;
+                                      el.focus();
+                                      try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignora */ }
+                                    }
+                                  }
+                                }}
+                                autoFocus={!readOnly && novoItemFocoRef.current === item.id}
+                                enterKeyHint="next"
+                                onKeyDown={(e) => {
+                                  // Enter no Nome → vai para o Valor (Shift+Enter continua quebrando linha)
+                                  if (readOnly || e.nativeEvent.isComposing) return;
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    valorRefs.current[item.id]?.focus();
                                   }
                                 }}
                                 value={item.nome}
@@ -3417,11 +3463,41 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 className="bg-transparent border-0 outline-none font-medium resize-none overflow-hidden"
                                 style={{ color: textColor, opacity: item.marcado ? 1 : 0.6, fontSize: tFont, lineHeight: `${tFont * 1.3}px`, fontFamily: "inherit", minWidth: 0, width: "100%" }}
                               />
+                              {/* Calculadora: à esquerda do valor (só em edição) */}
+                              {!readOnly && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setLinhaAtivaId(item.id);
+                                    if (calcAberta) fecharCalcTabela();
+                                    else abrirCalcTabela(idx, item);
+                                  }}
+                                  style={{
+                                    ...acaoBtn,
+                                    color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
+                                    background: calcAberta ? theme.borderAccent : acaoBtn.background,
+                                  }}
+                                  aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
+                                  aria-expanded={calcAberta}
+                                >
+                                  <Calculator size={19} />
+                                </button>
+                              )}
                               <textarea
                                 ref={(el) => {
+                                  valorRefs.current[item.id] = el;
                                   if (el) {
                                     el.style.height = "auto";
                                     el.style.height = `${el.scrollHeight}px`;
+                                  }
+                                }}
+                                enterKeyHint="done"
+                                onKeyDown={(e) => {
+                                  // Enter no Valor → lança a linha e abre uma nova (foco no Nome)
+                                  if (readOnly || e.nativeEvent.isComposing) return;
+                                  if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    confirmarValorTabela(idx, item.id);
                                   }
                                 }}
                                 value={valorParaExibir(item.valor, valorFocadoId === item.id)}
@@ -3455,28 +3531,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   width: "100%",
                                 }}
                               />
-                              {!readOnly && (linhaAtivaId === item.id || calcAberta) && (
-                                <div style={{ gridColumn: "2 / -1", gridRow: 2, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
-                                  <button
-                                    onClick={() => (calcAberta ? fecharCalcTabela() : abrirCalcTabela(idx, item))}
-                                    style={{
-                                      ...acaoBtn,
-                                      color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
-                                      background: calcAberta ? theme.borderAccent : acaoBtn.background,
-                                    }}
-                                    aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
-                                    aria-expanded={calcAberta}
-                                  >
-                                    <Calculator size={20} />
-                                  </button>
-                                  <button
-                                    onClick={() => setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" })}
-                                    style={{ ...acaoBtn, color: "#E57373" }}
-                                    aria-label="Remover item"
-                                  >
-                                    <Trash2 size={18} />
-                                  </button>
-                                </div>
+                              {/* Lixeira: na extrema direita da linha (só em edição) */}
+                              {!readOnly && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" }); }}
+                                  style={{ ...acaoBtn, color: "#E57373" }}
+                                  aria-label="Remover item"
+                                >
+                                  <Trash2 size={17} />
+                                </button>
                               )}
 
                               {/* Calculadora da linha: abre ao tocar no 🧮 e some ao confirmar (Enter ou ✓) */}
