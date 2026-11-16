@@ -48,6 +48,10 @@ import {
   BookOpen,
   Calculator,
   MoreHorizontal,
+  Delete as BackspaceIcon,
+  Keyboard,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import {
   Dialog,
@@ -1575,13 +1579,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // Tabela Manual: calculadora por linha (uma aberta por vez) e foco do campo de valor
   const [calcRow, setCalcRow] = useState<{ blockIdx: number; itemId: string } | null>(null);
   const [calcExpr, setCalcExpr] = useState("");
+  // Resultado da conta enquanto você digita: o valor da linha mostra este número, sempre atualizado
+  const [calcAoVivo, setCalcAoVivo] = useState<number | null>(null);
   const [calcError, setCalcError] = useState<string | null>(null);
   const [calcEditIdx, setCalcEditIdx] = useState<number | null>(null); // conta do histórico que está sendo editada
   const [pendingClearCalc, setPendingClearCalc] = useState<{ blockIdx: number; itemId: string; label: string; valor: string; total: number } | null>(null);
   const [calcMin, setCalcMin] = useState<Record<string, boolean>>({});
   const [valorFocadoId, setValorFocadoId] = useState<string | null>(null);
   const [linhaAtivaId, setLinhaAtivaId] = useState<string | null>(null); // linha da tabela com os botões à mostra
-  const calcInputRef = useRef<HTMLInputElement>(null);
+  const calcInputRef = useRef<HTMLTextAreaElement>(null);
   const calcPrefillRef = useRef(""); // texto com que a calculadora abriu (se ninguém mexer, confirmar só fecha)
   // Tabela Manual: foco automático no nome da linha recém-inserida e navegação Enter (nome → valor → nova linha)
   const novoItemFocoRef = useRef<string | null>(null);
@@ -1589,6 +1595,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const valorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
     try { return localStorage.getItem("calc_virgula_auto") !== "0"; } catch { return true; }
+  });
+  // Teclado próprio do app (números e operações) no lugar do teclado do celular ao tocar no valor
+  const [tecladoProprio, setTecladoProprio] = useState<boolean>(() => {
+    try { return localStorage.getItem("calc_teclado_proprio") !== "0"; } catch { return true; }
   });
 
   useEffect(() => {
@@ -1602,6 +1612,15 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   useEffect(() => {
     if (readOnly || !open) { setCalcRow(null); setLinhaAtivaId(null); }
   }, [readOnly, open]);
+
+  // Com o teclado do app aberto, leva a linha editada para a parte visível da tela
+  useEffect(() => {
+    if (!calcRow || !tecladoProprio) return;
+    const t = window.setTimeout(() => {
+      document.getElementById(`linha-${calcRow.itemId}`)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [calcRow, tecladoProprio]);
 
   // Ao fechar a nota, para a leitura em voz alta
   useEffect(() => {
@@ -1645,15 +1664,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // editIdx: posição da conta do histórico que será editada (ao tocar nela); sem isso abre com a última conta
   const abrirCalcTabela = (blockIdx: number, item: TableItem, editIdx?: number) => {
     const hist = item.calc?.historico ?? [];
-    const alvo = editIdx !== undefined && hist[editIdx] ? editIdx : null;
+    let alvo = editIdx !== undefined && hist[editIdx] ? editIdx : null;
     setCalcError(null);
-    setCalcEditIdx(alvo);
-    // Abre com o valor que já está na linha (ex.: 835,99 + ) para continuar somando; tocando numa conta do
-    // histórico, abre com aquela conta. Porcentagem ou valor que não vira número abre vazia.
+    // Abre com o que está escrito no valor, para corrigir: tocando numa conta do histórico, abre com aquela conta;
+    // se a linha tem conta, abre com a última conta (salvar a substitui); senão, abre com o próprio valor
+    // (número ou porcentagem). Para continuar somando, é só tocar em +.
     const valorAtual = item.valor.trim().replace(/R\$/gi, "").trim();
     let inicial = "";
     if (alvo !== null) inicial = hist[alvo].expressao;
-    else if (valorAtual && !tableValorEhPorcentagem(item.valor) && evaluateExpression(valorAtual) !== null) inicial = `${valorAtual} + `;
+    else if (hist.length > 0) { alvo = hist.length - 1; inicial = hist[alvo].expressao; }
+    else if (valorAtual && (tableValorEhPorcentagem(item.valor) || evaluateExpression(valorAtual) !== null)) inicial = valorAtual;
+    setCalcEditIdx(alvo);
+    setCalcAoVivo(null);
+    virgulaManualRef.current = false;
     calcPrefillRef.current = inicial;
     setCalcExpr(inicial);
     setCalcRow({ blockIdx, itemId: item.id });
@@ -1663,16 +1686,24 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     setCalcRow(null);
     setCalcError(null);
     setCalcEditIdx(null);
+    setLinhaAtivaId(null); // salvou/fechou: calculadora e lixeira da linha somem
   };
 
-  const confirmarCalcTabela = () => {
-    if (!calcRow) return;
-    const expr = calcExpr.trim();
-    if (!expr || expr === calcPrefillRef.current.trim()) { fecharCalcTabela(); return; }
+  const aplicarCalc = (exprBruta: string): boolean => {
+    if (!calcRow) return false;
+    const expr = exprBruta.trim();
+    if (!expr || expr === calcPrefillRef.current.trim()) { fecharCalcTabela(); return true; }
+    // Porcentagem digitada no teclado (ex.: −10%): vira o valor da linha como texto, sem histórico de conta
+    const pct = expr.match(/^([+\-−])?\s*(\d+(?:[.,]\d+)?)\s*%$/);
+    if (pct) {
+      updateTableItem(calcRow.blockIdx, calcRow.itemId, { valor: `${pct[1] === "-" || pct[1] === "−" ? "-" : ""}${pct[2]}%`, calc: undefined });
+      fecharCalcTabela();
+      return true;
+    }
     const resultado = evaluateExpression(expr);
     if (resultado === null) {
       setCalcError("Conta inválida. Exemplo: 3.99 + 8.32 + 25.78");
-      return;
+      return false;
     }
     const itemAtual = blocks[calcRow.blockIdx]?.tableItems?.find((i) => i.id === calcRow.itemId);
     // Editando uma conta do histórico: ela é substituída (e passa a ser a mais recente); senão, entra uma nova
@@ -1683,6 +1714,35 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       calc: { historico },
     });
     fecharCalcTabela();
+    return true;
+  };
+
+  // Confirmar (tique verde, Próximo): se a conta estiver inválida, avisa e continua aberta
+  const confirmarCalcTabela = (): boolean => aplicarCalc(calcExpr);
+
+  // Sair (tocar de novo no valor, no ícone da calculadora ou ir para o Nome): sempre deixa sair.
+  // Conta incompleta (sobrou um operador no fim) é aparada; "−" sozinho vira o valor "-";
+  // se nada servir, fecha e mantém o valor que a linha já tinha.
+  const sairCalcTabela = () => {
+    if (!calcRow) return;
+    const { blockIdx, itemId } = calcRow;
+    let expr = calcExpr.trim();
+    if (!expr || expr === calcPrefillRef.current.trim()) { fecharCalcTabela(); return; }
+    if (/^[−-]$/.test(expr)) {
+      updateTableItem(blockIdx, itemId, { valor: "-", calc: undefined });
+      fecharCalcTabela();
+      return;
+    }
+    expr = expr.replace(/[\s+−×÷*/-]+$/, "").trim(); // tira operador sobrando no fim
+    if (!expr) { fecharCalcTabela(); return; }
+    if (/^[\d.,]+$/.test(expr)) {
+      // só um número: vira o valor da linha, sem histórico de conta
+      const itemAtual = blocks[blockIdx]?.tableItems?.find((i) => i.id === itemId);
+      if (expr !== (itemAtual?.valor ?? "")) updateTableItem(blockIdx, itemId, { valor: expr, calc: undefined });
+      fecharCalcTabela();
+      return;
+    }
+    if (!aplicarCalc(expr)) fecharCalcTabela();
   };
 
   const alternarVirgulaAuto = () => {
@@ -1693,9 +1753,149 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     calcInputRef.current?.focus();
   };
 
+  // ── Edição da conta no ponto onde está o cursor (toque no campo posiciona o cursor) ──
+  const calcExprRef = useRef(calcExpr);
+  calcExprRef.current = calcExpr;
+  const calcCursorRef = useRef<number | null>(null);
+  // O campo da conta cresce para baixo quando a conta enche a linha (a conta inteira fica à vista)
+  useLayoutEffect(() => {
+    const el = calcInputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [calcExpr, calcRow, tecladoProprio]);
+  // Valor ao vivo: a cada toque recalcula; conta incompleta (operador sobrando) usa o que já está completo;
+  // se ainda não dá para calcular, mantém o último resultado correto
+  useEffect(() => {
+    if (!calcRow) { setCalcAoVivo(null); return; }
+    const expr = calcExpr.trim();
+    if (!expr) { setCalcAoVivo(0); return; }
+    const aparada = expr.replace(/[\s+−×÷*/-]+$/, "").trim();
+    if (!aparada) return;
+    const r = evaluateExpression(aparada);
+    if (r !== null) setCalcAoVivo(r);
+  }, [calcExpr, calcRow]);
+  const virgulaManualRef = useRef(false); // número atual com vírgula/ponto digitados à mão (sem vírgula automática)
+  const lerCursor = () => {
+    const expr = calcExprRef.current;
+    const el = calcInputRef.current;
+    const ini = Math.min(el?.selectionStart ?? expr.length, expr.length);
+    const fim = Math.min(el?.selectionEnd ?? ini, expr.length);
+    return { expr, ini, fim, len: expr.length };
+  };
+  const escreverCalc = (novo: string, pos: number) => {
+    setCalcError(null);
+    if (novo === calcExprRef.current) {
+      const el = calcInputRef.current;
+      if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* ignora */ } }
+      return;
+    }
+    calcCursorRef.current = pos;
+    calcExprRef.current = novo;
+    setCalcExpr(novo);
+  };
+  useEffect(() => {
+    if (calcCursorRef.current === null) return;
+    const pos = calcCursorRef.current;
+    calcCursorRef.current = null;
+    const el = calcInputRef.current;
+    if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { /* ignora */ } }
+  }, [calcExpr]);
+
   const inserirOperadorCalc = (op: string) => {
-    setCalcExpr((prev) => (op === "(" || op === ")" ? prev + op : `${prev.trimEnd()} ${op} `));
-    calcInputRef.current?.focus();
+    virgulaManualRef.current = false; // novo número: volta a vírgula automática
+    const { expr, ini, fim, len } = lerCursor();
+    if (op === "(" || op === ")") { escreverCalc(expr.slice(0, ini) + op + expr.slice(fim), ini + 1); return; }
+    if (ini === len && fim === len) {
+      const f = `${expr.trimEnd()} ${op} `;
+      escreverCalc(f, f.length);
+      return;
+    }
+    const ins = ` ${op} `;
+    escreverCalc(expr.slice(0, ini) + ins + expr.slice(fim), ini + ins.length);
+  };
+
+  // ── Teclado próprio (números, operações e porcentagem) ──
+  const aplicarCalcAuto = (t: string) => (calcVirgulaAuto ? aplicarVirgulaAutomatica(t) : t);
+  const tecladoDigito = (d: string) => {
+    const { expr, ini, fim, len } = lerCursor();
+    const novo = expr.slice(0, ini) + d + expr.slice(fim);
+    if (ini === len && fim === len) {
+      // número com vírgula digitada à mão: os dígitos entram como digitados
+      const f = virgulaManualRef.current ? novo : aplicarCalcAuto(novo);
+      escreverCalc(f, f.length);
+    } else escreverCalc(novo, ini + d.length); // no meio da conta não mexe nas casas decimais
+  };
+  // Vírgula e ponto: a partir daqui o número é digitado como está (sem a vírgula automática)
+  const tecladoSeparador = (sep: "," | ".") => {
+    const { expr, ini, fim, len } = lerCursor();
+    const antes = expr.slice(0, ini);
+    const tok = (antes.match(/[\d.,]*$/) ?? [""])[0];
+    if (ini === len && fim === len) {
+      let base = antes;
+      if (tok && /[.,]/.test(tok)) {
+        if (virgulaManualRef.current) return; // já tem separador neste número
+        // desfaz a vírgula automática: volta aos dígitos que foram digitados (0,01 → 1)
+        const digitos = String(parseInt(tok.replace(/\D/g, ""), 10) || 0);
+        base = antes.slice(0, antes.length - tok.length) + digitos;
+      } else if (!tok) {
+        base = antes + "0";
+      }
+      virgulaManualRef.current = true;
+      const f = base + sep;
+      escreverCalc(f, f.length);
+      return;
+    }
+    if (/[.,]/.test(tok)) return;
+    escreverCalc(antes + sep + expr.slice(fim), ini + 1);
+  };
+  const tecladoLimpar = () => { virgulaManualRef.current = false; escreverCalc("", 0); };
+  const tecladoApagar = () => {
+    const { expr, ini, fim, len } = lerCursor();
+    if (fim > ini) { escreverCalc(expr.slice(0, ini) + expr.slice(fim), ini); return; }
+    if (ini === 0) return;
+    const antes = expr.slice(0, ini);
+    const depois = expr.slice(ini);
+    const m = antes.match(/\s*[+−×÷-]\s*$/);
+    const cortar = /\s[+−×÷-]\s*$/.test(antes) && m ? m[0].length : 1;
+    const novoAntes = antes.slice(0, antes.length - cortar);
+    if (ini === len) {
+      // no fim: refaz as casas decimais automáticas só se o número tinha vírgula (inteiro e porcentagem ficam como estão)
+      const ultimo = antes.match(/[\d.,%]+$/);
+      const f = !virgulaManualRef.current && ultimo && ultimo[0].includes(",") ? aplicarCalcAuto(novoAntes) : novoAntes;
+      if (/[.,]$/.test(antes)) virgulaManualRef.current = false; // apagou o separador digitado à mão
+      escreverCalc(f, f.length);
+    } else {
+      escreverCalc(novoAntes + depois, novoAntes.length);
+    }
+  };
+  const tecladoPercent = () => {
+    const { expr, ini, fim, len } = lerCursor();
+    if (ini !== len || fim !== len) { escreverCalc(expr.slice(0, ini) + "%" + expr.slice(fim), ini + 1); return; }
+    const m = expr.match(/[\d.,]+$/);
+    if (!m) return;
+    // volta os centavos automáticos (0,10 → 10): a porcentagem é digitada como número inteiro
+    const num = calcVirgulaAuto ? String(parseInt(m[0].replace(/\D/g, ""), 10) || 0) : m[0];
+    const f = `${expr.slice(0, expr.length - m[0].length)}${num}%`;
+    escreverCalc(f, f.length);
+  };
+  // Próximo: lança o valor e vai para uma linha nova (foco no Nome); se a última linha já está vazia, vai para ela
+  const tecladoProximo = () => {
+    if (!calcRow) return;
+    const { blockIdx, itemId } = calcRow;
+    if (!confirmarCalcTabela()) return;
+    const itens = blocks[blockIdx]?.tableItems ?? [];
+    const ultima = itens[itens.length - 1];
+    if (ultima && ultima.id !== itemId && !ultima.nome.trim() && !(ultima.valor ?? "").trim()) {
+      nomeRefs.current[ultima.id]?.focus();
+    } else {
+      addTableItemAfter(blockIdx);
+    }
+  };
+  const alternarTeclado = (proprio: boolean) => {
+    setTecladoProprio(proprio);
+    try { localStorage.setItem("calc_teclado_proprio", proprio ? "1" : "0"); } catch { /* sem storage */ }
+    if (!proprio) window.setTimeout(() => calcInputRef.current?.focus(), 60);
   };
 
   const themeBase = getTheme(selectedColor);
@@ -2658,7 +2858,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Editor de Nota</DialogTitle>
-        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; }`}</style>
+        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
         {/* ── NOTEPAD CONTAINER ── */}
         <div
           className="flex flex-col"
@@ -2666,25 +2866,24 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             height: "100%",
             background: theme.bg,
             transition: "background 0.3s ease",
-            paddingBottom: "env(safe-area-inset-bottom)",
           }}
         >
 
           {/* ── EDIT MODE INDICATOR BAR ── */}
           {!readOnly && editingNote && (
-            <div className="flex items-center justify-center gap-2 px-3 py-1.5 shrink-0" style={{ background: "#2D9E7F", transition: "background 0.3s ease" }}>
-              <Pencil size={13} style={{ color: "#FFF" }} />
-              <span className="text-[14px] font-bold text-white">Editando...</span>
+            <div className="flex items-center justify-center gap-2 px-3 shrink-0" style={{ background: "#2D9E7F", transition: "background 0.3s ease", height: "max(env(safe-area-inset-top), 22px)" }}>
+              <Pencil size={11} style={{ color: "#FFF" }} />
+              <span className="text-[12px] font-bold text-white">Editando...</span>
             </div>
           )}
 
           {/* ── HEADER (2 linhas em mobile p/ garantir todos os botões visíveis) ── */}
           <div
             className="shrink-0"
-            style={{ background: theme.headerBg, transition: "background 0.3s ease", paddingTop: "calc(8px + env(safe-area-inset-top))" }}
+            style={{ background: theme.headerBg, transition: "background 0.3s ease", paddingTop: !readOnly && editingNote ? 2 : "calc(8px + env(safe-area-inset-top))" }}
           >
             {/* Linha 1: voltar + título + fechar */}
-            <div className="flex items-center gap-1 px-2 pb-1.5">
+            <div className="flex items-center gap-1 px-2 pb-1">
               {/* Antes havia aqui uma seta "Voltar" que fazia exatamente a
                   mesma coisa que o "X Fechar" à direita — duas setas pra uma
                   única ação. No lugar dela, o Desfazer agora fica sempre à
@@ -2727,7 +2926,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   onFocus={() => { activeFieldRef.current = "title"; }}
                   onPaste={handleMobilePaste}
                   placeholder="Título da nota..."
-                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-2 text-base font-semibold placeholder:text-gray-400 outline-none border-0 shadow-sm"
+                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-1.5 text-base font-semibold placeholder:text-gray-400 outline-none border-0 shadow-sm"
                   style={{ color: "#1A1A2E", fontSize: "16px" }}
                 />
               )}
@@ -3053,6 +3252,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               {blocks.map((block, idx) => {
                 if (block.type === "text") {
                   if (readOnly) {
+                    // Bloco de texto totalmente vazio (sobra de quando a tabela foi inserida): no modo leitura não ocupa linha
+                    if (!block.content && !consistentHtml(block) && blocks.length > 1) return null;
                     return (
                       <div
                         key={`text-${idx}`}
@@ -3378,51 +3579,64 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                       </div>
                       <div className="space-y-2 w-full max-w-full">
                         {(() => {
-                          // Largura da coluna de valor: cresce com o tamanho da fonte E com o
-                          // valor mais longo já digitado na tabela, pra nunca cortar o texto.
-                          const maiorValor = block.tableItems.reduce((max, it) => Math.max(max, valorParaExibir(it.valor || "", false).length), 4);
-                          const checkboxCol = Math.min(tFont, 22) + 8;
-                          const valueCol = Math.min(Math.max(56, maiorValor * tFont * 0.62 + 14), 180);
-                          // Uma linha só (✓ nome valor). Em edição, tocar numa linha mostra embaixo dela
-                          // os botões da calculadora e da lixeira (só daquela linha).
-                          const acaoBtn = {
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            width: 32, height: 32, borderRadius: 10, lineHeight: 1,
-                            background: isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)",
-                          } as const;
+                          // Cartão por linha: ✓ redondo | nome (ocupa o espaço que sobra) | valor.
+                          // Calculadora e lixeira ficam numa barra com texto, embaixo da linha tocada.
+                          const checkSize = 26;
                           return block.tableItems.map((item) => {
                           const ehPct = tableValorEhPorcentagem(item.valor);
                           const numero = tableValorParaNumero(item.valor);
                           const calcAberta = calcRow?.blockIdx === idx && calcRow?.itemId === item.id;
                           const previaCalc = calcAberta && /[+\-−×÷*/]/.test(calcExpr.replace(/^\s*-/, "")) ? evaluateExpression(calcExpr) : null;
                           const historicoCalc = item.calc?.historico ?? [];
-                          const histMinimizado = !!calcMin[item.id];
+                          // Histórico da conta começa recolhido; o ícone ao lado do valor abre e fecha
+                          const histMinimizado = calcMin[item.id] !== false;
+                          // O ícone só aparece se houver mais de um valor na conta (a calculadora foi usada com uma soma/conta)
+                          const temMultiplos =
+                            historicoCalc.length > 1 ||
+                            historicoCalc.some((h) => /[+−×÷*\/]/.test(h.expressao) || /\d\s*-\s*\d/.test(h.expressao));
+                          // Calculadora e lixeira só aparecem na linha em edição
+                          const ativa = !readOnly && (linhaAtivaId === item.id || calcAberta);
+                          // Com a calculadora aberta (teclado do app) o valor da linha mostra o resultado ao vivo da conta
+                          const vivo = calcAberta && tecladoProprio && calcAoVivo !== null;
+                          const valorExibido = vivo ? formatarMoedaBRL(calcAoVivo as number) : valorParaExibir(item.valor, valorFocadoId === item.id);
+                          // Texto "molde" que dá a largura do campo de valor: o mais longo entre o formatado e o digitado,
+                          // para a calculadora não "pular" quando você toca no valor para editar.
+                          const valorFormatado = valorParaExibir(item.valor || "", false);
+                          const valorMolde = vivo || valorExibido.length > valorFormatado.length ? valorExibido : valorFormatado;
+                          const numeroTela = vivo ? (calcAoVivo as number) : numero;
                           return (
                             <div
                               key={item.id}
+                              id={`linha-${item.id}`}
                               onClick={() => { if (!readOnly) setLinhaAtivaId(item.id); }}
-                              className="rounded-xl px-2 py-1.5 w-full"
+                              className="rounded-xl px-3 py-2.5 w-full"
                               style={{
-                                display: "grid",
-                                // Em edição: ✓ | nome | [🧮 valor] | 🗑 — a calculadora fica colada no valor, com o mesmo espaço (6 px) que separa o valor da lixeira
-                                gridTemplateColumns: readOnly
-                                  ? `${checkboxCol}px minmax(0, 1fr) ${valueCol}px`
-                                  : `${checkboxCol}px minmax(0, 1fr) max-content ${acaoBtn.width}px`,
-                                columnGap: 6,
-                                rowGap: readOnly ? 0 : 6,
-                                alignItems: "center",
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: readOnly ? 0 : 10,
                                 background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.025)",
-                                border: `1px solid ${!readOnly && linhaAtivaId === item.id ? theme.borderAccent : theme.lines}`,
+                                border: `1px solid ${!readOnly && (linhaAtivaId === item.id || calcAberta) ? "#2D9E7F" : theme.lines}`,
+                                borderRadius: 14,
                                 boxSizing: "border-box",
                                 maxWidth: "100%",
                               }}
                             >
+                              {/* Linha principal (flexbox): ✓ | nome (flex-1) | 🧮 + valor | 🗑 */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", minWidth: 0 }}>
                               <button
                                 onClick={(e) => { e.stopPropagation(); if (!readOnly) updateTableItem(idx, item.id, { marcado: !item.marcado }); }}
-                                style={{ color: item.marcado ? "#4CAF50" : (isDark ? "#888" : "#BDBDBD"), minWidth: 0 }}
                                 disabled={readOnly}
+                                aria-label={item.marcado ? "Desmarcar item" : "Marcar item"}
+                                aria-pressed={item.marcado}
+                                style={{
+                                  width: checkSize, height: checkSize, borderRadius: "50%", flexShrink: 0,
+                                  display: "flex", alignItems: "center", justifyContent: "center",
+                                  color: "#2D9E7F",
+                                  background: item.marcado ? (isDark ? "rgba(76,175,80,0.22)" : "rgba(45,158,127,0.16)") : "transparent",
+                                  border: item.marcado ? "1.5px solid transparent" : `1.5px solid ${isDark ? "#777" : "#BDBDBD"}`,
+                                }}
                               >
-                                {item.marcado ? <CheckSquare size={Math.min(tFont, 22)} /> : <Square size={Math.min(tFont, 22)} />}
+                                {item.marcado && <Check size={16} strokeWidth={3} />}
                               </button>
                               <textarea
                                 ref={(el) => {
@@ -3454,44 +3668,53 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   e.target.style.height = "auto";
                                   e.target.style.height = `${e.target.scrollHeight}px`;
                                 }}
-                                onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; setLinhaAtivaId(item.id); }}
+                                onFocus={() => {
+                                  focusedBlockRef.current = idx; activeFieldRef.current = "content";
+                                  // ao ir para o Nome com a calculadora aberta, lança a conta (se for válida) e fecha
+                                  if (calcRow && tecladoProprio) sairCalcTabela();
+                                  setLinhaAtivaId(item.id);
+                                }}
                                 onPaste={handleMobilePaste}
                                 readOnly={readOnly}
                                 rows={1}
                                 tabIndex={readOnly ? -1 : 0}
                                 placeholder="Nome"
                                 className="bg-transparent border-0 outline-none font-medium resize-none overflow-hidden"
-                                style={{ color: textColor, opacity: item.marcado ? 1 : 0.6, fontSize: tFont, lineHeight: `${tFont * 1.3}px`, fontFamily: "inherit", minWidth: 0, width: "100%" }}
+                                style={{ color: textColor, opacity: item.marcado ? 1 : 0.6, fontSize: tFont, lineHeight: `${tFont * 1.3}px`, fontFamily: "inherit", flex: "1 1 0%", minWidth: 0 }}
                               />
-                              {/* Calculadora + valor juntos: a calculadora fica colada no valor (só em edição) */}
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6, minWidth: 0 }}>
-                              {!readOnly && (
+                              {/* Calculadora (colada à esquerda do valor, só na linha em edição) + valor + ícone de minimizar (à direita do valor) */}
+                              <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0, flex: "0 1 auto", maxWidth: "64%" }}>
+                              {ativa && (
                                 <button
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    setLinhaAtivaId(item.id);
-                                    if (calcAberta) fecharCalcTabela();
-                                    else abrirCalcTabela(idx, item);
+                                    if (calcAberta) sairCalcTabela();
+                                    else { setLinhaAtivaId(item.id); abrirCalcTabela(idx, item); }
                                   }}
-                                  style={{
-                                    ...acaoBtn,
-                                    color: calcAberta ? (isDark ? "#1A1A2E" : "#FFF") : theme.textMuted,
-                                    background: calcAberta ? theme.borderAccent : acaoBtn.background,
-                                  }}
-                                  aria-label={calcAberta ? "Fechar calculadora" : "Abrir calculadora"}
+                                  aria-label={calcAberta ? "Salvar e fechar a calculadora" : "Abrir calculadora"}
                                   aria-expanded={calcAberta}
+                                  style={{
+                                    width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                                    color: calcAberta ? "#FFF" : theme.textMuted,
+                                    background: calcAberta ? "#2D9E7F" : (isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)"),
+                                  }}
                                 >
-                                  <Calculator size={19} />
+                                  <Calculator size={18} />
                                 </button>
                               )}
-                              <textarea
-                                ref={(el) => {
-                                  valorRefs.current[item.id] = el;
-                                  if (el) {
-                                    el.style.height = "auto";
-                                    el.style.height = `${el.scrollHeight}px`;
-                                  }
+                              <div style={{ position: "relative", display: "grid", minWidth: 0, flex: "0 1 auto" }}>
+                              <span
+                                aria-hidden="true"
+                                style={{
+                                  gridArea: "1 / 1", visibility: "hidden", whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+                                  fontSize: tFont, lineHeight: `${tFont * 1.3}px`, fontWeight: 600, fontFamily: "inherit",
+                                  textAlign: "right", paddingRight: 4, minWidth: 24,
                                 }}
+                              >
+                                {(valorMolde || "Valor") + "\u200b"}
+                              </span>
+                              <textarea
+                                ref={(el) => { valorRefs.current[item.id] = el; }}
                                 enterKeyHint="done"
                                 onKeyDown={(e) => {
                                   // Enter no Valor → lança a linha e abre uma nova (foco no Nome)
@@ -3501,53 +3724,95 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     confirmarValorTabela(idx, item.id);
                                   }
                                 }}
-                                value={valorParaExibir(item.valor, valorFocadoId === item.id)}
+                                value={valorExibido}
                                 onChange={(e) => {
                                   // Digitar o valor direto apaga a conta antiga (some o histórico e os botões)
                                   if (!readOnly) updateTableItem(idx, item.id, item.calc ? { valor: e.target.value, calc: undefined } : { valor: e.target.value });
-                                  e.target.style.height = "auto";
-                                  e.target.style.height = `${e.target.scrollHeight}px`;
                                 }}
+                                inputMode={tecladoProprio && !readOnly ? "none" : undefined}
                                 onFocus={(e) => {
                                   focusedBlockRef.current = idx; activeFieldRef.current = "content";
-                                  setValorFocadoId(item.id);
                                   setLinhaAtivaId(item.id);
+                                  // Teclado do app: tocar no valor abre a calculadora da linha (sem o teclado do celular)
+                                  if (tecladoProprio && !readOnly) {
+                                    if (calcRow?.itemId !== item.id) abrirCalcTabela(idx, item);
+                                    return;
+                                  }
+                                  setValorFocadoId(item.id);
                                   const el = e.target;
                                   requestAnimationFrame(() => { try { el.setSelectionRange(el.value.length, el.value.length); } catch { /* ignora */ } });
                                 }}
                                 onBlur={() => setValorFocadoId((cur) => (cur === item.id ? null : cur))}
                                 onPaste={handleMobilePaste}
-                                readOnly={readOnly}
+                                readOnly={readOnly || tecladoProprio}
                                 rows={1}
                                 tabIndex={readOnly ? -1 : 0}
                                 placeholder="Valor"
                                 className="bg-transparent border-0 outline-none text-right font-semibold resize-none overflow-hidden"
                                 style={{
-                                  color: numero < 0 ? "#E53935" : (isDark ? "#81C784" : "#2D9E7F"),
+                                  color: numeroTela < 0 ? "#E53935" : (isDark ? "#81C784" : "#2D9E7F"),
                                   opacity: item.marcado ? 1 : 0.6,
                                   fontSize: tFont,
                                   lineHeight: `${tFont * 1.3}px`,
                                   fontFamily: "inherit",
-                                  minWidth: 0,
-                                  // Em edição o campo tem só a largura do que está escrito (assim a calculadora fica
-                                  // colada nele); usa o maior entre o texto formatado e o digitado para não "pular" ao focar.
-                                  width: readOnly
-                                    ? "100%"
-                                    : `${Math.min(Math.max(Math.max(valorParaExibir(item.valor || "", false).length, (item.valor || "").length, 5) * tFont * 0.62 + 16, 48), 180)}px`,
-                                  flexShrink: 0,
+                                  // fica por cima do molde invisível: mesma largura e altura do texto
+                                  position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
+                                  margin: 0, padding: 0, paddingRight: 4, boxSizing: "border-box", display: "block",
+                                  caretColor: "#2D9E7F",
+                                  // com o teclado do app, quem recebe o toque é o botão transparente por cima (funciona no dedo e no mouse)
+                                  pointerEvents: tecladoProprio && !readOnly ? "none" : "auto",
                                 }}
                               />
+                              {/* Botão transparente sobre o valor: toque abre a calculadora; novo toque salva e fecha */}
+                              {!readOnly && tecladoProprio && (
+                                <button
+                                  type="button"
+                                  aria-label={calcAberta ? "Salvar o valor e fechar a calculadora" : "Editar o valor"}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (calcAberta) sairCalcTabela();
+                                    else { setLinhaAtivaId(item.id); abrirCalcTabela(idx, item); }
+                                  }}
+                                  style={{ position: "absolute", left: 0, right: 0, top: -6, bottom: -6, background: "transparent", zIndex: 1, touchAction: "manipulation" }}
+                                />
+                              )}
+                              {/* Cursor piscando do lado direito do valor enquanto a calculadora da linha está aberta (ex.: 19,99|) */}
+                              {!readOnly && tecladoProprio && calcAberta && (
+                                <span
+                                  aria-hidden="true"
+                                  style={{
+                                    position: "absolute", right: 0, top: "12%", bottom: "12%", width: 2, borderRadius: 1,
+                                    background: "#2D9E7F", animation: "nbCaret 1s steps(1) infinite", pointerEvents: "none",
+                                  }}
+                                />
+                              )}
                               </div>
-                              {/* Lixeira: na extrema direita da linha (só em edição) */}
-                              {!readOnly && (
+                              {/* Minimizar/maximizar a conta: ícone bem pequeno à direita do valor, só se há mais de um valor na conta */}
+                              {temMultiplos && (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); setCalcMin((prev) => ({ ...prev, [item.id]: prev[item.id] === false })); }}
+                                  aria-label={histMinimizado ? "Maximizar a conta" : "Minimizar a conta"}
+                                  aria-expanded={!histMinimizado}
+                                  style={{ width: 22, height: 22, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: theme.textMuted }}
+                                >
+                                  {histMinimizado ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+                                </button>
+                              )}
+                              </div>
+                              {/* Lixeira: ponta direita da linha (só na linha em edição) */}
+                              {ativa && (
                                 <button
                                   onClick={(e) => { e.stopPropagation(); setPendingDeleteItem({ type: "table", blockIdx: idx, itemId: item.id, label: item.nome || "esse item" }); }}
-                                  style={{ ...acaoBtn, color: "#E57373" }}
                                   aria-label="Remover item"
+                                  style={{
+                                    width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                                    color: "#E57373", background: isDark ? "rgba(229,115,115,0.14)" : "rgba(229,115,115,0.12)",
+                                  }}
                                 >
                                   <Trash2 size={17} />
                                 </button>
                               )}
+                              </div>
 
                               {/* Calculadora da linha: abre ao tocar no 🧮 e some ao confirmar (Enter ou ✓) */}
                               {!readOnly && calcAberta && (
@@ -3559,13 +3824,17 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                   }}
                                 >
                                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                                    <input
+                                    <textarea
                                       ref={calcInputRef}
+                                      rows={1}
+                                      inputMode={tecladoProprio ? "none" : undefined}
                                       value={calcExpr}
                                       onChange={(e) => {
+                                        calcCursorRef.current = null;
+                                        const texto = e.target.value.replace(/\n/g, " ");
                                         // a vírgula automática só age quando você digita no fim da conta (não bagunça números do meio)
                                         const noFim = e.target.selectionStart === e.target.value.length;
-                                        setCalcExpr(calcVirgulaAuto && noFim ? aplicarVirgulaAutomatica(e.target.value) : e.target.value);
+                                        setCalcExpr(calcVirgulaAuto && noFim ? aplicarVirgulaAutomatica(texto) : texto);
                                         if (calcError) setCalcError(null);
                                       }}
                                       onKeyDown={(e) => {
@@ -3573,7 +3842,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                         else if (e.key === "Escape") { e.preventDefault(); fecharCalcTabela(); }
                                       }}
                                       onFocus={() => { focusedBlockRef.current = idx; activeFieldRef.current = "content"; }}
-                                      placeholder={calcVirgulaAuto ? "399 + 832" : "3.99 + 8.32 + 25.78"}
+                                      placeholder={tecladoProprio ? "Digite o valor" : (calcVirgulaAuto ? "399 + 832" : "3.99 + 8.32 + 25.78")}
                                       autoComplete="off"
                                       autoCapitalize="off"
                                       spellCheck={false}
@@ -3582,6 +3851,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                       style={{
                                         flex: 1, minWidth: 0, fontSize: tFont, color: textColor, background: "transparent",
                                         border: `1px solid ${theme.lines}`, borderRadius: 8, padding: "6px 8px", outline: "none",
+                                        caretColor: "#2D9E7F",
+                                        // quebra de linha automática: a conta inteira fica visível
+                                        resize: "none", overflow: "hidden", display: "block", lineHeight: 1.35,
+                                        whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "inherit",
                                       }}
                                     />
                                     <button
@@ -3593,7 +3866,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                       <Check size={18} color="#FFF" strokeWidth={2.5} />
                                     </button>
                                   </div>
+                                  {!tecladoProprio ? (
                                   <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+                                    <button
+                                      onMouseDown={(e) => e.preventDefault()}
+                                      onClick={() => alternarTeclado(true)}
+                                      title="Usar o teclado do app"
+                                      style={{
+                                        padding: "4px 8px", borderRadius: 8, fontSize: tFont * 0.8, fontWeight: 700,
+                                        color: textColor, background: "transparent", border: `1px solid ${theme.lines}`,
+                                      }}
+                                    >
+                                      Teclado do app
+                                    </button>
                                     <button
                                       onMouseDown={(e) => e.preventDefault()}
                                       onClick={alternarVirgulaAuto}
@@ -3627,64 +3912,70 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                       </span>
                                     )}
                                   </div>
+                                  ) : (
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                      <button
+                                        onMouseDown={(e) => e.preventDefault()}
+                                        onClick={() => alternarTeclado(false)}
+                                        aria-label="Usar o teclado do celular"
+                                        style={{
+                                          display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 8,
+                                          fontSize: tFont * 0.75, fontWeight: 600, color: theme.textMuted, border: `1px solid ${theme.lines}`,
+                                        }}
+                                      >
+                                        <Keyboard size={14} /> Teclado do celular
+                                      </button>
+                                      {previaCalc !== null && (
+                                        <div style={{ fontSize: tFont * 0.9, fontWeight: 600, color: theme.textMuted }}>
+                                          = {formatarMoedaBRL(previaCalc)}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
                                   {calcError && (
                                     <p role="alert" style={{ fontSize: tFont * 0.8, color: "#E53935" }}>{calcError}</p>
                                   )}
                                 </div>
                               )}
 
-                              {/* Histórico da conta: só aparece se a calculadora foi usada nesta linha */}
-                              {historicoCalc.length > 0 && !calcAberta && (
+                              {/* Histórico da conta: aparece ao maximizar pelo ícone ao lado do valor */}
+                              {historicoCalc.length > 0 && !calcAberta && !histMinimizado && (
                                 <div
                                   style={{
-                                    gridColumn: "1 / -1", padding: "4px 8px", borderRadius: 8,
+                                    padding: "4px 8px", borderRadius: 8,
                                     background: isDark ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.03)",
                                     fontSize: tFont * 0.75,
                                   }}
                                 >
-                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                    <span style={{ color: theme.textMuted }}>Conta ({historicoCalc.length})</span>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                                      {!readOnly && (
-                                        <button
-                                          onClick={() => setPendingClearCalc({ blockIdx: idx, itemId: item.id, label: item.nome || "esse item", valor: valorParaExibir(item.valor, false), total: historicoCalc.length })}
-                                          aria-label="Excluir histórico da conta"
-                                          style={{ display: "flex", alignItems: "center", gap: 3, color: "#E53935", fontWeight: 600, padding: "2px 6px" }}
-                                        >
-                                          <Trash2 size={Math.min(tFont * 0.75, 14)} /> Excluir
-                                        </button>
-                                      )}
+                                  {[...historicoCalc].reverse().map((h, hi) => {
+                                    const origem = historicoCalc.length - 1 - hi;
+                                    const conteudo = <>{h.expressao} = <strong>{formatarMoedaBRL(h.resultado)}</strong></>;
+                                    return readOnly ? (
+                                      <div key={hi} style={{ color: textColor, opacity: 0.8, overflowWrap: "anywhere" }}>{conteudo}</div>
+                                    ) : (
                                       <button
-                                        onClick={() => setCalcMin((prev) => ({ ...prev, [item.id]: !prev[item.id] }))}
-                                        aria-expanded={!histMinimizado}
-                                        style={{ color: theme.borderAccent, fontWeight: 600, padding: "2px 6px" }}
+                                        key={hi}
+                                        onClick={() => abrirCalcTabela(idx, item, origem)}
+                                        aria-label="Editar esta conta"
+                                        style={{
+                                          display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
+                                          gap: 8, textAlign: "left", padding: "3px 0", color: textColor, opacity: 0.85, overflowWrap: "anywhere",
+                                        }}
                                       >
-                                        {histMinimizado ? "▸ Maximizar" : "▾ Minimizar"}
+                                        <span style={{ minWidth: 0 }}>{conteudo}</span>
+                                        <Pencil size={Math.min(tFont * 0.75, 14)} style={{ flexShrink: 0, color: theme.textMuted }} />
                                       </button>
-                                    </div>
-                                  </div>
-                                  {!histMinimizado && (
-                                    <div style={{ marginTop: 2 }}>
-                                      {[...historicoCalc].reverse().map((h, hi) => {
-                                        const origem = historicoCalc.length - 1 - hi;
-                                        const conteudo = <>{h.expressao} = <strong>{formatarMoedaBRL(h.resultado)}</strong></>;
-                                        return readOnly ? (
-                                          <div key={hi} style={{ color: textColor, opacity: 0.8, overflowWrap: "anywhere" }}>{conteudo}</div>
-                                        ) : (
-                                          <button
-                                            key={hi}
-                                            onClick={() => abrirCalcTabela(idx, item, origem)}
-                                            aria-label="Editar esta conta"
-                                            style={{
-                                              display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between",
-                                              gap: 8, textAlign: "left", padding: "3px 0", color: textColor, opacity: 0.85, overflowWrap: "anywhere",
-                                            }}
-                                          >
-                                            <span style={{ minWidth: 0 }}>{conteudo}</span>
-                                            <Pencil size={Math.min(tFont * 0.75, 14)} style={{ flexShrink: 0, color: theme.textMuted }} />
-                                          </button>
-                                        );
-                                      })}
+                                    );
+                                  })}
+                                  {!readOnly && (
+                                    <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 2 }}>
+                                      <button
+                                        onClick={() => setPendingClearCalc({ blockIdx: idx, itemId: item.id, label: item.nome || "esse item", valor: valorParaExibir(item.valor, false), total: historicoCalc.length })}
+                                        aria-label="Excluir histórico da conta"
+                                        style={{ display: "flex", alignItems: "center", gap: 3, color: "#E53935", fontWeight: 600, padding: "2px 6px" }}
+                                      >
+                                        <Trash2 size={Math.min(tFont * 0.75, 14)} /> Excluir histórico
+                                      </button>
                                     </div>
                                   )}
                                 </div>
@@ -3841,16 +4132,66 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             </>
           )}
 
-          {/* ── FOOTER COMPACTO: ⋮ | ✓ ── */}
-          {!readOnly ? (
+          {/* ── TECLADO DO APP (números e operações): ocupa o lugar do rodapé enquanto a calculadora da linha está aberta ── */}
+          {!readOnly && calcRow && tecladoProprio ? (
+            <div
+              className="shrink-0"
+              style={{
+                background: theme.toolbarBg,
+                borderTop: `1px solid ${theme.lines}`,
+                padding: "8px 8px calc(4px + env(safe-area-inset-bottom))",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {(() => {
+                const base: React.CSSProperties = {
+                  height: 46, borderRadius: 12, fontSize: 21, fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center",
+                  userSelect: "none", WebkitUserSelect: "none", touchAction: "manipulation",
+                };
+                const num: React.CSSProperties = { ...base, color: textColor, background: isDark ? "rgba(255,255,255,0.09)" : "rgba(255,255,255,0.8)" };
+                const fn: React.CSSProperties = { ...base, color: textColor, background: isDark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.06)" };
+                const op: React.CSSProperties = { ...base, fontSize: 24, color: "#2D9E7F", background: isDark ? "rgba(76,175,80,0.16)" : "rgba(45,158,127,0.14)" };
+                const prox: React.CSSProperties = { ...base, fontSize: 15, gap: 2, color: "#FFF", background: "#2D9E7F" };
+                const K = (key: string, label: React.ReactNode, style: React.CSSProperties, onPress: () => void, aria: string) => (
+                  <button key={key} type="button" aria-label={aria} style={style} onMouseDown={(e) => e.preventDefault()} onClick={onPress}>
+                    {label}
+                  </button>
+                );
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 6 }}>
+                    {K("c", "C", fn, tecladoLimpar, "Limpar")}
+                    {K("bk", <BackspaceIcon size={22} />, fn, tecladoApagar, "Apagar")}
+                    {K("pct", "%", fn, tecladoPercent, "Porcentagem")}
+                    {K("div", "÷", op, () => inserirOperadorCalc("÷"), "Dividir")}
+                    {K("7", "7", num, () => tecladoDigito("7"), "7")}
+                    {K("8", "8", num, () => tecladoDigito("8"), "8")}
+                    {K("9", "9", num, () => tecladoDigito("9"), "9")}
+                    {K("mul", "×", op, () => inserirOperadorCalc("×"), "Multiplicar")}
+                    {K("4", "4", num, () => tecladoDigito("4"), "4")}
+                    {K("5", "5", num, () => tecladoDigito("5"), "5")}
+                    {K("6", "6", num, () => tecladoDigito("6"), "6")}
+                    {K("sub", "−", op, () => inserirOperadorCalc("−"), "Subtrair")}
+                    {K("1", "1", num, () => tecladoDigito("1"), "1")}
+                    {K("2", "2", num, () => tecladoDigito("2"), "2")}
+                    {K("3", "3", num, () => tecladoDigito("3"), "3")}
+                    {K("add", "+", op, () => inserirOperadorCalc("+"), "Somar")}
+                    {K("vg", ",", num, () => tecladoSeparador(","), "Vírgula")}
+                    {K("0", "0", num, () => tecladoDigito("0"), "0")}
+                    {K("pt", ".", num, () => tecladoSeparador("."), "Ponto")}
+                    {K("nx", <>Próximo<ChevronRight size={18} /></>, prox, tecladoProximo, "Lançar e ir para a próxima linha")}
+                  </div>
+                );
+              })()}
+            </div>
+          ) : !readOnly ? (
             <div
               className="flex items-center justify-between px-5 shrink-0"
               style={{
                 background: theme.toolbarBg,
                 borderTop: `1px solid ${theme.lines}`,
-                paddingTop: 10,
-                paddingBottom: `calc(10px + env(safe-area-inset-bottom))`,
-                gap: 16,
+                paddingTop: 3,
+                paddingBottom: "calc(2px + env(safe-area-inset-bottom))",
+                gap: 12,
               }}
             >
               {/* FAB ⋮ — esquerda */}
@@ -3860,7 +4201,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                     <div className="fixed inset-0 z-[60]" onClick={() => setShowFab(false)} />
                     <div
                       className="absolute z-[70] flex flex-col gap-2"
-                      style={{ bottom: 60, left: 0, minWidth: 180 }}
+                      style={{ bottom: 50, left: 0, minWidth: 180 }}
                     >
                       {[
                         { icon: <Camera size={18} />, label: "Câmera", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("camera"); if (f) await insertImageAtBlock(f); } else { cameraInputRef.current?.click(); } } },
@@ -3904,7 +4245,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   onClick={() => setShowFab((v) => !v)}
                   className="flex items-center justify-center rounded-full transition-all active:scale-95"
                   style={{
-                    width: 48, height: 48,
+                    width: 40, height: 40,
                     background: showFab ? "#1A1A2E" : theme.headerBg,
                     border: `2px solid ${theme.borderAccent}`,
                     color: showFab ? "#FFF" : theme.textMuted,
@@ -3924,10 +4265,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 onClick={editingNote ? handleSaveAndBackToView : () => doSaveAndClose("publicada")}
                 disabled={!title.trim() && !blocksToPlainText(blocks).trim()}
                 className="flex items-center justify-center rounded-full transition-all active:scale-95 disabled:opacity-50"
-                style={{ background: "#2D9E7F", width: 48, height: 48, boxShadow: "0 4px 14px rgba(45,158,127,0.4)" }}
+                style={{ background: "#2D9E7F", width: 40, height: 40, boxShadow: "0 4px 14px rgba(45,158,127,0.4)" }}
                 title="Salvar"
               >
-                <Check size={22} color="#FFF" strokeWidth={2.5} />
+                <Check size={20} color="#FFF" strokeWidth={2.5} />
               </button>
 
               {/* Fechar — direita, mesmo tamanho do "⋮" à esquerda. Antes era
@@ -3936,7 +4277,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               <button
                 onClick={handleClose}
                 className="flex items-center justify-center rounded-full transition-all active:scale-95"
-                style={{ width: 48, height: 48, background: theme.headerBg, border: `2px solid ${theme.borderAccent}`, color: theme.textMuted }}
+                style={{ width: 40, height: 40, background: theme.headerBg, border: `2px solid ${theme.borderAccent}`, color: theme.textMuted }}
                 title="Fechar"
                 aria-label="Fechar"
               >
@@ -3945,11 +4286,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             </div>
           ) : (
             <div
-              className="flex flex-wrap gap-x-3 gap-y-2 px-3 py-2.5 shrink-0 justify-between items-center"
+              className="flex flex-wrap gap-x-3 gap-y-1.5 px-3 pt-2 shrink-0 justify-between items-center"
               style={{
                 background: theme.toolbarBg,
                 borderTop: `1px solid ${theme.lines}`,
-                paddingBottom: "calc(60px + env(safe-area-inset-bottom))",
+                paddingBottom: "calc(4px + env(safe-area-inset-bottom))",
               }}
             >
               {/* Esquerda: leitura limpa e áudio */}
