@@ -11,6 +11,7 @@ import {
   adminGenerateKey,
   adminList,
   adminPhones,
+  adminSendKeyEmail,
   adminSetStatus,
   adminUpdateModules,
   normalizeModules,
@@ -65,6 +66,7 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [phones, setPhones] = useState<Record<string, string>>({});
   const [copiedMsg, setCopiedMsg] = useState(false);
+  const [emailState, setEmailState] = useState<"" | "sending" | "sent" | "manual">("");
   const [showAlert, setShowAlert] = useState(false);
 
   // modal de chave
@@ -151,6 +153,10 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     }
   };
 
+  useEffect(() => {
+    setEmailState("");
+  }, [generated, target]);
+
   // Texto da chave (o mesmo para e-mail, WhatsApp e "copiar mensagem")
   const keyMessage = () => {
     if (!target || !generated) return { subject: "", body: "" };
@@ -168,9 +174,9 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
     return { subject, body };
   };
 
-  // No app (Android) abre o programa de e-mail do celular; no computador abre o Gmail no navegador
-  // (um link mailto: sozinho não faz nada quando o computador não tem programa de e-mail).
-  const sendEmail = () => {
+  // Plano B (manual): no app (Android) abre o programa de e-mail do celular; no computador abre o
+  // Gmail no navegador (um link mailto: sozinho não faz nada quando não há programa de e-mail).
+  const openEmailManually = () => {
     if (!target || !generated) return;
     const { subject, body } = keyMessage();
     if (Capacitor.isNativePlatform()) {
@@ -182,6 +188,20 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
       "_blank",
       "noopener",
     );
+  };
+
+  // Tenta enviar o e-mail sozinho (função send-license-key + EmailJS). Se a função ainda não
+  // estiver instalada ou falhar, abre o e-mail pronto para você enviar.
+  const sendEmail = async () => {
+    if (!target || !generated || emailState === "sending") return;
+    setEmailState("sending");
+    const ok = await adminSendKeyEmail(target.email, target.name, generated);
+    if (ok) {
+      setEmailState("sent");
+      return;
+    }
+    setEmailState("manual");
+    openEmailManually();
   };
 
   const sendWhatsApp = () => {
@@ -458,11 +478,21 @@ export default function AdminPanel({ onClose }: { onClose: () => void }) {
                   </p>
                 )}
                 <button
-                  className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
+                  className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold disabled:opacity-60"
                   onClick={sendEmail}
+                  disabled={emailState === "sending"}
                 >
-                  Enviar por e-mail
+                  {emailState === "sending"
+                    ? "Enviando…"
+                    : emailState === "sent"
+                      ? "✓ E-mail enviado ao cliente"
+                      : "Enviar por e-mail"}
                 </button>
+                {emailState === "manual" && (
+                  <p className="text-center text-xs text-muted-foreground">
+                    O envio automático não funcionou. Abri o e-mail pronto para você enviar.
+                  </p>
+                )}
                 <button
                   className="block w-full rounded-lg border border-border px-4 py-2.5 text-center font-semibold"
                   onClick={async () => {

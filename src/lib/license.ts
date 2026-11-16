@@ -207,6 +207,16 @@ export async function adminPhones(): Promise<Record<string, string>> {
   }
 }
 
+/** Envia a chave por e-mail pelo servidor (função send-license-key + EmailJS). false se não deu. */
+export async function adminSendKeyEmail(email: string, name: string, key: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.functions.invoke("send-license-key", { body: { email, name, key } });
+    return !error && !!data?.ok;
+  } catch {
+    return false;
+  }
+}
+
 export async function adminGenerateKey(id: string, modules: Modules): Promise<string> {
   const { data, error } = await sb.rpc("admin_generate_key", { p_id: id, p_modules: modules });
   if (error) throw new Error(error.message);
