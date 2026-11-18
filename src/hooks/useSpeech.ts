@@ -4,6 +4,25 @@ import { TextToSpeech } from "@capacitor-community/text-to-speech";
 import { prepareForSpeech, splitForSpeech } from "@/lib/noteText";
 
 const LANG = "pt-BR";
+const RATE_KEY = "readalong_rate";
+
+/** Velocidades oferecidas na tela de leitura. */
+export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
+
+/** Um trecho (normalmente uma frase) a ser falado. */
+export interface SpeechSegment {
+  /** texto falado (as posições do destaque são contadas neste texto) */
+  speak: string;
+  /** falado só no começo do trecho e sem destaque (ex.: "Concluído: ") */
+  prefix?: string;
+}
+
+/** Onde a voz está agora: número do trecho e posição (em caracteres) dentro dele. */
+export interface SpeechPosition {
+  index: number;
+  start: number;
+  end: number;
+}
 
 /** true quando o app roda dentro do Android/iOS empacotado pelo Capacitor. */
 const isNative = (): boolean => {
@@ -19,42 +38,69 @@ const isWebSupported = (): boolean =>
   "speechSynthesis" in window &&
   "SpeechSynthesisUtterance" in window;
 
+/** Chrome do Android (fora do app) ignora speak() logo depois de cancel(); o Safari NÃO pode esperar. */
+const isAndroidWeb = (): boolean =>
+  typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+
 /** No Android o idioma costuma vir como "pt_BR"; normaliza para comparar. */
 const normLang = (lang: string | undefined) =>
   (lang || "").replace("_", "-").toLowerCase();
 
 interface VoicePick {
   voice: SpeechSynthesisVoice | null;
-  /** true quando sabemos que não há voz pt-BR utilizável offline */
-  missingOfflineVoice: boolean;
+  /** true quando sabemos que não há voz pt-BR utilizável */
+  missingVoice: boolean;
 }
 
 function pickVoice(): VoicePick {
   const voices = window.speechSynthesis.getVoices();
-  // Em alguns WebViews a lista vem vazia: deixa o motor escolher pelo lang.
-  if (voices.length === 0) return { voice: null, missingOfflineVoice: false };
+  // Em alguns WebViews/Safari a lista vem vazia no começo: deixa o motor escolher pelo lang.
+  if (voices.length === 0) return { voice: null, missingVoice: false };
 
   const ptbr = voices.filter((v) => normLang(v.lang) === "pt-br");
-  const local = ptbr.find((v) => v.localService);
-  if (local) return { voice: local, missingOfflineVoice: false };
+  const pool = ptbr.length > 0 ? ptbr : voices.filter((v) => normLang(v.lang).startsWith("pt"));
+
+  const local = pool.find((v) => v.localService);
+  if (local) return { voice: local, missingVoice: false };
 
   const offline = typeof navigator !== "undefined" && navigator.onLine === false;
-  if (ptbr.length > 0 && !offline) {
-    return { voice: ptbr[0], missingOfflineVoice: false };
-  }
-  return { voice: null, missingOfflineVoice: true };
+  if (pool.length > 0 && !offline) return { voice: pool[0], missingVoice: false };
+  return { voice: null, missingVoice: true };
 }
 
 const MSG_VOICE_MISSING =
-  "Voz em Português (Brasil) indisponível. No Android: Configurações > Sistema > Idioma > Saída de texto para fala > instale a voz pt-BR.";
+  "Voz em Português (Brasil) indisponível. No Android: Configurações > Sistema > Idioma > Saída de texto para fala > instale a voz pt-BR. No iPhone: Ajustes > Acessibilidade > Conteúdo Falado > Vozes > Português.";
 const MSG_GENERIC_ERROR = "Não foi possível ler em voz alta agora.";
+const MSG_BLOCKED = "O navegador bloqueou o áudio. Toque em ▶ de novo para ouvir.";
+
+function loadRate(): number {
+  try {
+    const v = parseFloat(localStorage.getItem(RATE_KEY) || "");
+    if (SPEECH_RATES.includes(v)) return v;
+  } catch {
+    /* sem storage */
+  }
+  return 1;
+}
 
 export function useSpeech() {
   const native = isNative();
   const supported = native || isWebSupported();
   const [speaking, setSpeaking] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [position, setPosition] = useState<SpeechPosition | null>(null);
+  const [finished, setFinished] = useState(false);
+  const [rate, setRateState] = useState<number>(loadRate);
+
   const runRef = useRef(0); // invalida callbacks de leituras antigas
+  const segsRef = useRef<SpeechSegment[]>([]);
+  const rateRef = useRef(rate);
+  const indexRef = useRef(0); // trecho atual
+  const baseRef = useRef(0); // converte posição do motor de voz -> posição no texto mostrado
+  const boundarySeenRef = useRef(false); // o motor de voz está avisando cada palavra?
+  const estTimerRef = useRef<number | null>(null);
+  const uttRef = useRef<SpeechSynthesisUtterance | null>(null); // evita o Safari "esquecer" a fala
+  const runFromRef = useRef<(index: number, startChar: number, myRun: number) => void>(() => {});
 
   // Força o carregamento da lista de vozes no navegador (alguns aparelhos carregam tarde).
   useEffect(() => {
@@ -66,8 +112,40 @@ export function useSpeech() {
     }
   }, [native]);
 
+  const clearEstimator = useCallback(() => {
+    if (estTimerRef.current !== null) {
+      window.clearInterval(estTimerRef.current);
+      estTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * Plano B do destaque: se o aparelho não avisa qual palavra está sendo falada,
+   * estimamos a posição pelo tempo decorrido e pela velocidade.
+   */
+  const startEstimator = useCallback(
+    (myRun: number, index: number, startChar: number, prefixLen: number, textLen: number) => {
+      clearEstimator();
+      const t0 = Date.now();
+      estTimerRef.current = window.setInterval(() => {
+        if (runRef.current !== myRun) {
+          clearEstimator();
+          return;
+        }
+        if (boundarySeenRef.current) return; // o aparelho está avisando de verdade
+        const elapsed = Date.now() - t0;
+        if (elapsed < 900) return; // dá tempo do aviso real chegar
+        const charsSpoken = ((elapsed - 400) / 1000) * 14 * rateRef.current;
+        const pos = Math.min(startChar + Math.max(0, Math.floor(charsSpoken - prefixLen)), startChar + textLen - 1);
+        setPosition({ index, start: pos, end: pos });
+      }, 150);
+    },
+    [clearEstimator]
+  );
+
   const stop = useCallback(() => {
     runRef.current += 1;
+    clearEstimator();
     if (isNative()) {
       TextToSpeech.stop().catch(() => {
         /* ignora */
@@ -80,125 +158,156 @@ export function useSpeech() {
       }
     }
     setSpeaking(false);
-  }, []);
+  }, [clearEstimator]);
 
-  // Para a fala ao sair da nota.
+  // Para a fala ao sair da tela.
   useEffect(() => stop, [stop]);
 
-  /** Leitura pelo motor de voz nativo do Android (plugin do Capacitor). */
-  const speakNative = useCallback((chunks: string[], myRun: number) => {
-    setSpeaking(true);
-
-    void (async () => {
-      try {
-        for (const chunk of chunks) {
-          if (runRef.current !== myRun) return;
-          // speak() só resolve quando o trecho termina de ser falado.
-          await TextToSpeech.speak({
-            text: chunk,
-            lang: LANG,
-            rate: 1.0,
-            pitch: 1.0,
-            volume: 1.0,
-            category: "ambient",
-          });
-        }
-        if (runRef.current === myRun) setSpeaking(false);
-      } catch (err) {
-        if (runRef.current !== myRun) return; // foi cancelada de propósito
-        runRef.current += 1;
-        setSpeaking(false);
-        const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
-        setMessage(
-          txt.includes("language") || txt.includes("lang") || txt.includes("voice")
-            ? MSG_VOICE_MISSING
-            : MSG_GENERIC_ERROR
-        );
-      }
-    })();
-  }, []);
-
-  /** Leitura pelo speechSynthesis do navegador (PWA / computador). */
-  const speakWeb = useCallback((chunks: string[], myRun: number) => {
-    const synth = window.speechSynthesis;
-
-    // Limpa a fila antes de falar.
+  // Android (app instalado): o plugin avisa qual trecho está sendo falado.
+  useEffect(() => {
+    if (!native) return;
+    let handle: { remove?: () => Promise<void> } | null = null;
+    let cancelled = false;
     try {
-      synth.cancel();
+      const p = (TextToSpeech as any).addListener?.("onRangeStart", (info: { start: number; end: number }) => {
+        boundarySeenRef.current = true;
+        const base = baseRef.current;
+        setPosition({
+          index: indexRef.current,
+          start: Math.max(0, info.start + base),
+          end: Math.max(0, info.end + base),
+        });
+      });
+      Promise.resolve(p)
+        .then((h) => {
+          if (cancelled) h?.remove?.();
+          else handle = h;
+        })
+        .catch(() => {
+          /* versão do plugin sem esse aviso: usa o plano B */
+        });
     } catch {
       /* ignora */
     }
+    return () => {
+      cancelled = true;
+      handle?.remove?.();
+    };
+  }, [native]);
 
-    const { voice, missingOfflineVoice } = pickVoice();
-    if (missingOfflineVoice) {
-      setMessage(
-        "Sem voz em Português (Brasil) instalada para uso offline. No Android: Configurações > Idioma > Saída de texto para fala > baixe a voz pt-BR."
-      );
-    }
-
-    setSpeaking(true);
-
-    // Alguns Androids ignoram speak() logo após cancel(); um respiro curto resolve.
-    window.setTimeout(() => {
+  const handleError = useCallback(
+    (myRun: number, code: string) => {
       if (runRef.current !== myRun) return;
-      chunks.forEach((chunk, idx) => {
-        const u = new SpeechSynthesisUtterance(chunk);
+      runRef.current += 1;
+      clearEstimator();
+      try {
+        if (isWebSupported()) window.speechSynthesis.cancel();
+      } catch {
+        /* ignora */
+      }
+      setSpeaking(false);
+      if (code === "not-allowed") setMessage(MSG_BLOCKED);
+      else if (code === "language-unavailable" || code === "voice-unavailable") setMessage(MSG_VOICE_MISSING);
+      else setMessage(MSG_GENERIC_ERROR);
+    },
+    [clearEstimator]
+  );
+
+  /** Fala o trecho `index` (a partir do caractere `startChar`) e encadeia os próximos. */
+  const runFrom = useCallback(
+    (index: number, startChar: number, myRun: number) => {
+      if (runRef.current !== myRun) return;
+      const segs = segsRef.current;
+      if (index >= segs.length) {
+        clearEstimator();
+        setSpeaking(false);
+        setFinished(true);
+        return;
+      }
+
+      const seg = segs[index];
+      const body = seg.speak.slice(startChar);
+      if (!body.trim()) {
+        runFromRef.current(index + 1, 0, myRun);
+        return;
+      }
+
+      const prefix = startChar === 0 ? seg.prefix ?? "" : "";
+      const text = prefix + body;
+      const base = startChar - prefix.length; // posição no motor + base = posição no texto mostrado
+      baseRef.current = base;
+      indexRef.current = index;
+      boundarySeenRef.current = false;
+      setPosition({ index, start: startChar, end: startChar });
+      startEstimator(myRun, index, startChar, prefix.length, body.length);
+
+      const goNext = () => {
+        if (runRef.current !== myRun) return;
+        clearEstimator();
+        runFromRef.current(index + 1, 0, myRun);
+      };
+
+      if (native) {
+        // speak() só resolve quando o trecho termina de ser falado.
+        TextToSpeech.speak({
+          text,
+          lang: LANG,
+          rate: rateRef.current,
+          pitch: 1.0,
+          volume: 1.0,
+          category: "ambient",
+        })
+          .then(goNext)
+          .catch((err) => {
+            if (runRef.current !== myRun) return; // foi cancelada de propósito
+            const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
+            handleError(myRun, txt.includes("lang") || txt.includes("voice") ? "voice-unavailable" : "error");
+          });
+        return;
+      }
+
+      // Navegador / PWA / Safari
+      try {
+        const synth = window.speechSynthesis;
+        const { voice, missingVoice } = pickVoice();
+        if (missingVoice && index === 0) setMessage(MSG_VOICE_MISSING);
+
+        const u = new SpeechSynthesisUtterance(text);
         u.lang = LANG;
         if (voice) u.voice = voice;
-        u.rate = 1;
+        u.rate = rateRef.current;
         u.pitch = 1;
-
-        if (idx === chunks.length - 1) {
-          u.onend = () => {
-            if (runRef.current === myRun) setSpeaking(false);
-          };
-        }
-        u.onerror = (e) => {
+        u.onboundary = (e: SpeechSynthesisEvent) => {
+          if (runRef.current !== myRun) return;
+          if (e.name && e.name !== "word") return;
+          boundarySeenRef.current = true;
+          const at = Math.max(startChar, e.charIndex + base);
+          setPosition({ index, start: at, end: at + (e.charLength || 0) });
+        };
+        u.onend = goNext;
+        u.onerror = (e: SpeechSynthesisErrorEvent) => {
           if (runRef.current !== myRun) return;
           if (e.error === "canceled" || e.error === "interrupted") return;
-          runRef.current += 1;
-          try {
-            synth.cancel();
-          } catch {
-            /* ignora */
-          }
-          setSpeaking(false);
-          setMessage(
-            e.error === "language-unavailable" || e.error === "voice-unavailable"
-              ? MSG_VOICE_MISSING
-              : MSG_GENERIC_ERROR
-          );
+          handleError(myRun, e.error);
         };
-
-        try {
-          synth.speak(u);
-        } catch {
-          if (runRef.current === myRun) {
-            setSpeaking(false);
-            setMessage(MSG_GENERIC_ERROR);
-          }
-        }
-      });
-    }, 80);
-  }, []);
-
-  const speak = useCallback(
-    (rawText: string): boolean => {
-      setMessage(null);
-
-      if (!supported) {
-        setMessage("A leitura em voz alta não está disponível neste aparelho.");
-        return false;
+        uttRef.current = u; // mantém uma referência até terminar (senão o Safari pode calar no meio)
+        synth.speak(u);
+      } catch {
+        handleError(myRun, "error");
       }
+    },
+    [native, clearEstimator, startEstimator, handleError]
+  );
+  runFromRef.current = runFrom;
 
-      const text = prepareForSpeech(rawText);
-      if (!text) {
-        setMessage("Esta nota não tem texto para ler.");
-        return false;
-      }
-
-      const chunks = splitForSpeech(text);
+  /** Começa (ou recomeça) a leitura no trecho/caractere indicados. */
+  const startAt = useCallback(
+    (index: number, startChar: number) => {
       const myRun = ++runRef.current;
+      clearEstimator();
+      setSpeaking(true);
+      setFinished(false);
+      setMessage(null);
 
       if (native) {
         // Interrompe qualquer fala anterior antes de começar a nova.
@@ -207,15 +316,109 @@ export function useSpeech() {
             /* ignora */
           })
           .finally(() => {
-            if (runRef.current === myRun) speakNative(chunks, myRun);
+            if (runRef.current === myRun) runFrom(index, startChar, myRun);
           });
-      } else {
-        speakWeb(chunks, myRun);
+        return;
       }
 
+      try {
+        const synth = window.speechSynthesis;
+        if (synth.speaking || synth.pending) synth.cancel();
+      } catch {
+        /* ignora */
+      }
+      if (isAndroidWeb()) {
+        // Alguns Androids ignoram speak() logo após cancel(); um respiro curto resolve.
+        window.setTimeout(() => {
+          if (runRef.current === myRun) runFrom(index, startChar, myRun);
+        }, 80);
+      } else {
+        // Safari/iPhone: a fala TEM que começar dentro do toque do usuário, sem esperar nada.
+        runFrom(index, startChar, myRun);
+      }
+    },
+    [native, clearEstimator, runFrom]
+  );
+
+  /** Lê uma lista de trechos a partir de `startIndex`. Chame direto de um toque/clique. */
+  const playSegments = useCallback(
+    (segments: SpeechSegment[], startIndex = 0, startChar = 0): boolean => {
+      setMessage(null);
+      if (!supported) {
+        setMessage("A leitura em voz alta não está disponível neste aparelho.");
+        return false;
+      }
+      if (segments.length === 0) {
+        setMessage("Esta nota não tem texto para ler.");
+        return false;
+      }
+      segsRef.current = segments;
+      const idx = Math.max(0, Math.min(segments.length - 1, startIndex));
+      indexRef.current = idx;
+      startAt(idx, idx === startIndex ? startChar : 0);
       return true;
     },
-    [supported, native, speakNative, speakWeb]
+    [supported, startAt]
+  );
+
+  /** Vai para outro trecho/palavra. Com `autoplay` falso só move o marcador (leitura parada). */
+  const jumpTo = useCallback(
+    (index: number, startChar = 0, autoplay = true) => {
+      const segs = segsRef.current;
+      if (segs.length === 0) return;
+      const idx = Math.max(0, Math.min(segs.length - 1, index));
+      indexRef.current = idx;
+      if (autoplay) {
+        startAt(idx, startChar);
+      } else {
+        stop();
+        setFinished(false);
+        setPosition({ index: idx, start: startChar, end: startChar });
+      }
+    },
+    [startAt, stop]
+  );
+
+  /** Continua de onde parou (do começo da frase atual; se a nota acabou, recomeça). */
+  const resume = useCallback(() => {
+    const segs = segsRef.current;
+    if (segs.length === 0) return;
+    const idx = finished ? 0 : Math.min(indexRef.current, segs.length - 1);
+    startAt(idx, 0);
+  }, [finished, startAt]);
+
+  const setRate = useCallback(
+    (r: number) => {
+      if (!SPEECH_RATES.includes(r)) return;
+      rateRef.current = r;
+      setRateState(r);
+      try {
+        localStorage.setItem(RATE_KEY, String(r));
+      } catch {
+        /* sem storage */
+      }
+      // Se está falando, recomeça a frase atual já na nova velocidade.
+      if (speaking) startAt(indexRef.current, 0);
+    },
+    [speaking, startAt]
+  );
+
+  /** Modo antigo: lê um texto corrido (sem destaque). Continua funcionando como antes. */
+  const speak = useCallback(
+    (rawText: string): boolean => {
+      setMessage(null);
+      if (!supported) {
+        setMessage("A leitura em voz alta não está disponível neste aparelho.");
+        return false;
+      }
+      const text = prepareForSpeech(rawText);
+      if (!text) {
+        setMessage("Esta nota não tem texto para ler.");
+        return false;
+      }
+      return playSegments(splitForSpeech(text).map((c) => ({ speak: c })));
+    },
+    [supported, playSegments]
   );
 
   const toggle = useCallback(
@@ -228,5 +431,20 @@ export function useSpeech() {
 
   const clearMessage = useCallback(() => setMessage(null), []);
 
-  return { supported, speaking, message, speak, stop, toggle, clearMessage };
+  return {
+    supported,
+    speaking,
+    message,
+    position,
+    finished,
+    rate,
+    speak,
+    stop,
+    toggle,
+    clearMessage,
+    playSegments,
+    jumpTo,
+    resume,
+    setRate,
+  };
 }

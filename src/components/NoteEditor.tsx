@@ -67,6 +67,8 @@ import { ALERT_SOUND_OPTIONS, playAlertSoundPreview, type AlertSoundId } from "@
 import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { consistentHtml } from "@/lib/richTextConsistency";
 import { useSpeech } from "@/hooks/useSpeech";
+import { ReadAlongView } from "@/components/ReadAlongView";
+import { buildReadDoc, type ReadDoc } from "@/lib/readAlong";
 import { evaluateExpression } from "@/lib/moneyCalc";
 
 // ── Types ──────────────────────────────────────────────
@@ -1575,6 +1577,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [readingMode, setReadingMode] = useState(false);
   const speech = useSpeech();
   const isSpeaking = speech.speaking;
+  // Leitura acompanhada (palavra destacada, toque para continuar)
+  const [readDoc, setReadDoc] = useState<ReadDoc | null>(null);
+  const [readResumedFrom, setReadResumedFrom] = useState(0);
 
   // Tabela Manual: calculadora por linha (uma aberta por vez) e foco do campo de valor
   const [calcRow, setCalcRow] = useState<{ blockIdx: number; itemId: string } | null>(null);
@@ -1624,40 +1629,68 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
   // Ao fechar a nota, para a leitura em voz alta
   useEffect(() => {
-    if (!open) speech.stop();
+    if (!open) {
+      speech.stop();
+      setReadDoc(null);
+    }
   }, [open, speech.stop]);
 
   useEffect(() => {
     if (speech.message) toast({ title: "Leitura em voz alta", description: speech.message });
   }, [speech.message]);
 
-  const getPlainTextForSpeech = () => {
-    const parts: string[] = [];
-    if (title.trim()) parts.push(title.trim());
-    blocks.forEach((b) => {
-      if (b.type === "text" && b.content?.trim()) parts.push(b.content.trim());
-      else if (b.type === "checklist" && b.items) {
-        b.items.forEach((it) => { if (it.text?.trim()) parts.push(`${it.checked ? "concluído" : "pendente"}: ${it.text.trim()}`); });
-      } else if (b.type === "table" && b.tableItems) {
-        b.tableItems.forEach((it) => { if (it.nome?.trim()) parts.push(`${it.nome.trim()}: ${valorParaExibir(it.valor || "0", false)}`); });
-      }
-    });
-    return parts.join(". ");
+  const closeReadAlong = () => {
+    speech.stop();
+    setReadDoc(null);
   };
 
-  // Leitura em voz alta: voz local pt-BR (funciona offline no Android), com cancel() antes de falar
-  // e aviso quando o aparelho não tem sintetizador ou a voz em português.
+  // Leitura em voz alta ACOMPANHADA: abre a tela de leitura, destaca a palavra falada e
+  // continua de onde você parou. Roda direto do toque (o Safari/iPhone exige isso).
   const toggleReadAloud = () => {
+    if (readDoc) {
+      closeReadAlong();
+      return;
+    }
     if (speech.speaking) {
       speech.stop();
       return;
     }
-    const text = getPlainTextForSpeech();
-    if (!text.trim()) {
+    const doc = buildReadDoc(
+      title,
+      blocks.map((b) => ({
+        type: b.type,
+        content: b.content,
+        html: b.type === "text" ? consistentHtml(b) || undefined : undefined,
+        items: b.items?.map((it) => ({ text: it.text, checked: !!it.checked, bold: (it as { bold?: boolean }).bold })),
+        rows: b.tableItems?.map((it) => ({ nome: it.nome, valor: valorParaExibir(it.valor || "0", false) })),
+      }))
+    );
+    if (doc.sentences.length === 0) {
       toast({ title: "Nada pra ler", description: "Essa nota ainda está vazia." });
       return;
     }
-    speech.speak(text);
+
+    // Retoma de onde parou da última vez (só se a nota não mudou de tamanho)
+    let startIdx = 0;
+    try {
+      const raw = editingNote?.id ? localStorage.getItem(`readalong_pos_${editingNote.id}`) : null;
+      if (raw) {
+        const saved = JSON.parse(raw) as { i?: number; n?: number };
+        if (typeof saved.i === "number" && saved.n === doc.sentences.length && saved.i > 0 && saved.i < doc.sentences.length) {
+          startIdx = saved.i;
+        }
+      }
+    } catch {
+      /* sem storage */
+    }
+
+    setReadResumedFrom(startIdx);
+    setReadDoc(doc);
+    speech.playSegments(
+      doc.sentences.map((s) => ({ speak: s.speak, prefix: s.prefix })),
+      startIdx,
+      0
+    );
   };
 
   // ── Tabela Manual: calculadora por linha ─────────────
@@ -4930,6 +4963,21 @@ ${blocksToPlainText(blocks)}`.trim();
               </button>
             </div>
           </div>
+        )}
+
+        {/* Leitura acompanhada — palavra destacada enquanto a voz lê */}
+        {readDoc && (
+          <ReadAlongView
+            doc={readDoc}
+            speech={speech}
+            storageKey={editingNote?.id ? `readalong_pos_${editingNote.id}` : null}
+            theme={theme}
+            isDark={isDark}
+            textColor={textColor}
+            fontSize={editorFontSize}
+            resumedFrom={readResumedFrom}
+            onClose={closeReadAlong}
+          />
         )}
 
         {/* Modo de leitura simplificado — tela limpa, só o texto, bem grande */}
