@@ -1291,6 +1291,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   };
   const [activeBlockIdx, setActiveBlockIdx] = useState<number | null>(null);
   const [selectedColor, setSelectedColor] = useState(NOTE_COLORS[0].value);
+  // Última cor clara usada: o botão de modo escuro volta para ela (e nunca fica preso no escuro)
+  const lastLightColorRef = useRef<string>(NOTE_COLORS[0].value);
+  useEffect(() => {
+    if (selectedColor !== "bg-gray-800") lastLightColorRef.current = selectedColor;
+  }, [selectedColor]);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showOcrModal, setShowOcrModal] = useState(false);
@@ -3029,7 +3034,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
               {/* Toggle modo escuro */}
               <button
-                onClick={() => setSelectedColor(selectedColor === "bg-gray-800" ? (editingNote?.color || NOTE_COLORS[0].value) : "bg-gray-800")}
+                onClick={() => setSelectedColor(selectedColor === "bg-gray-800" ? lastLightColorRef.current : "bg-gray-800")}
                 className="p-2 rounded-full hover:bg-black/10 transition-all shrink-0 flex items-center justify-center"
                 title={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}
                 aria-label={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}

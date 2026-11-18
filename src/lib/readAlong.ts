@@ -264,9 +264,35 @@ export function splitSentenceRanges(text: string): [number, number][] {
   return out;
 }
 
+/** Palavras curtas em português que, em MAIÚSCULAS, a voz soletra (DE vira "dê é"). */
+const SMALL_WORDS = new Set([
+  "A", "E", "O", "AS", "OS", "DE", "DA", "DO", "DAS", "DOS", "EM", "NA", "NO", "NAS", "NOS",
+  "UM", "UMA", "OU", "AO", "AOS", "COM", "POR", "PARA", "SEM", "QUE", "SE", "MAIS", "MAS", "É",
+]);
+
+/**
+ * As vozes do celular soletram palavras escritas só em MAIÚSCULAS (tratam como sigla).
+ * Aqui passamos para minúsculas só o que vai para a voz — a tela continua igual.
+ * Siglas curtas (PDF, SQL, CLP) continuam sendo soletradas.
+ */
+function softenCaps(text: string): string {
+  const letters = text.match(/\p{L}/gu) || [];
+  const upper = letters.filter((c) => c !== c.toLowerCase()).length;
+  const mostlyCaps = letters.length >= 4 && upper / letters.length >= 0.7;
+
+  const out = text.replace(/\p{L}+/gu, (w) => {
+    if (w === w.toLowerCase() || w !== w.toUpperCase()) return w; // já tem minúscula
+    const lower = w.toLowerCase();
+    if (lower.length !== w.length) return w;
+    if (mostlyCaps || w.length >= 5 || SMALL_WORDS.has(w)) return lower;
+    return w; // sigla curta: PDF, SQL, NR12...
+  });
+  return out.length === text.length ? out : text;
+}
+
 function toSpeak(text: string): string {
   // Link vira "link" (mesmo tamanho do original, para o destaque continuar alinhado)
-  return text.replace(/https?:\/\/\S+/gi, (m) => "link".padEnd(m.length, " "));
+  return softenCaps(text.replace(/https?:\/\/\S+/gi, (m) => "link".padEnd(m.length, " ")));
 }
 
 // ── 4) Monta o documento completo ────────────────────────────────────────────────
