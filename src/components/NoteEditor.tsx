@@ -461,6 +461,17 @@ function blocksToPlainText(blocks: ContentBlock[]): string {
     .join("\n");
 }
 
+/** true quando a nota tem algo além de texto vazio (texto, foto, checklist ou tabela). */
+function blocksHaveBody(blocks: ContentBlock[]): boolean {
+  return blocks.some(
+    (b) =>
+      (b.type === "text" && !!b.content?.trim()) ||
+      b.type === "image" ||
+      (b.type === "checklist" && (b.items?.length ?? 0) > 0) ||
+      (b.type === "table" && (b.tableItems?.length ?? 0) > 0)
+  );
+}
+
 function getTheme(color: string) {
   return COLOR_THEMES[color] || COLOR_THEMES["bg-yellow-100"];
 }
@@ -1415,6 +1426,36 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     };
   }, [open]);
 
+  /**
+   * Proteção contra apagar a nota por engano: devolve true quando NÃO se deve gravar.
+   * - nada mudou desde que a nota foi aberta (também evita gastar internet à toa);
+   * - o texto está vazio e igual ao que foi carregado (a nota abriu sem texto: gravar isso
+   *   apagaria o texto que está na nuvem);
+   * - no salvamento automático: o texto está vazio (só um Salvar ou Fechar feito por você
+   *   pode gravar uma nota esvaziada de propósito).
+   */
+  const shouldSkipSave = (serialized: string, auto: boolean): boolean => {
+    const base = loadedRef.current;
+    if (!base || !editingNote || base.id !== editingNote.id) return false;
+    const bodyEmpty = !blocksHaveBody(blocks);
+    const sameContent = serialized === base.content;
+    if (sameContent && bodyEmpty) return true;
+    if (sameContent && title === base.title && selectedColor === base.color) return true;
+    if (auto && bodyEmpty) return true;
+    return false;
+  };
+
+  const markSaved = (serialized: string) => {
+    if (!editingNote) return;
+    loadedRef.current = {
+      id: editingNote.id,
+      title,
+      content: serialized,
+      color: selectedColor,
+      hadBody: blocksHaveBody(blocks),
+    };
+  };
+
   // Auto-sync to cloud every 10 seconds
   useEffect(() => {
     if (!open || !editingNote) return;
@@ -1422,9 +1463,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       const hasContent = title.trim() || blocksToPlainText(blocks).trim();
       if (!hasContent) return;
       const serialized = serializeBlocks(blocks);
+      if (shouldSkipSave(serialized, true)) return;
       const imageUrls: string[] = []; // as fotos já ficam dentro do texto da nota (serialized); gravar a lista separada duplicava tudo
       const status = editingNote?.status || "rascunho";
       onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+      markSaved(serialized);
     }, 10000);
     return () => clearInterval(interval);
   }, [open, title, blocks, selectedColor, editingNote, onSave]);
@@ -1439,9 +1482,12 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         const hasContent = title.trim() || blocksToPlainText(blocks).trim();
         if (hasContent && editingNote) {
           const serialized = serializeBlocks(blocks);
-          const imageUrls: string[] = []; // as fotos já ficam dentro do texto da nota (serialized); gravar a lista separada duplicava tudo
-          const status = editingNote?.status || "rascunho";
-          onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+          if (!shouldSkipSave(serialized, true)) {
+            const imageUrls: string[] = []; // as fotos já ficam dentro do texto da nota (serialized); gravar a lista separada duplicava tudo
+            const status = editingNote?.status || "rascunho";
+            onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+            markSaved(serialized);
+          }
         }
       }
     };
@@ -1476,6 +1522,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
   // ── Sync on open (with draft recovery) ────────────────
   const lastNoteId = useRef<string | null>(null);
+  // Como a nota estava salva quando foi aberta. Serve para nunca gravar por cima dela uma versão
+  // vazia (quando o texto não carregou) e para não regravar na nuvem uma nota que não mudou.
+  const loadedRef = useRef<{ id: string; title: string; content: string; color: string; hadBody: boolean } | null>(null);
   useEffect(() => {
     if (!open) {
       if (lastNoteId.current !== null) lastNoteId.current = null;
@@ -1562,6 +1611,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     titleRef.current = initialTitleForHistory;
     setHistory([{ title: initialTitleForHistory, blocks: JSON.parse(JSON.stringify(initialBlocksForHistory)) }]);
     setHistoryIdx(0);
+
+    if (editingNote) {
+      const savedBlocks = ensureTrailingTextBlock(deserializeBlocks(editingNote.content));
+      loadedRef.current = {
+        id: editingNote.id,
+        title: editingNote.title,
+        content: serializeBlocks(savedBlocks),
+        color: editingNote.color,
+        hadBody: blocksHaveBody(savedBlocks),
+      };
+    } else {
+      loadedRef.current = null;
+    }
 
     // Corrigido: fecha qualquer visualizador de foto ampliada ou editor de
     // desenho que tenha ficado aberto de uma nota anterior — sem isso, a
@@ -2771,6 +2833,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     const serialized = serializeBlocks(blocks);
     const imageUrls: string[] = []; // as fotos já ficam dentro do texto da nota (serialized); gravar a lista separada duplicava tudo
     onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+    markSaved(serialized);
     clearDraft();
     snapshotRef.current = null;
     onSetReadOnly?.(true);
@@ -2844,7 +2907,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         const serialized = serializeBlocks(blocks);
         const imageUrls: string[] = []; // as fotos já ficam dentro do texto da nota (serialized); gravar a lista separada duplicava tudo
         const status = editingNote?.status || "rascunho";
-        onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+        if (!shouldSkipSave(serialized, false)) {
+          onSave(title, serialized, imageUrls, selectedColor, "default", "medium", status);
+        }
 
         if (!navigator.onLine) {
           toast({ title: "Salvo localmente", description: "Sincronizando quando houver conexão..." });
