@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, Component, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Note } from "@/hooks/useNotes";
 import { takeNativePhoto, isNative } from "@/lib/native";
 import { shareOrSaveImage, shareText } from "@/lib/nativeShare";
@@ -1032,6 +1033,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [viewIndex, setViewIndex] = useState(0);
   const [viewDragging, setViewDragging] = useState(false);
   const [viewCloseOpacity, setViewCloseOpacity] = useState(1);
+  // Visualizador de foto: true quando a tela do aparelho está deitada (horizontal).
+  const [viewerLandscape, setViewerLandscape] = useState(false);
   const viewerContainerRef = useRef<HTMLDivElement>(null);
   const viewerImgRef = useRef<HTMLImageElement>(null);
   const baseImgSizeRef = useRef({ w: 0, h: 0 });
@@ -1300,6 +1303,58 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       toast({ title: "Não foi possível compartilhar essa foto", description: "Tente novamente.", variant: "destructive" });
     }
   };
+  // Visualizador de foto: acompanha a tela virada (horizontal/vertical). Ao virar,
+  // volta ao ajuste inteiro e mede de novo o tamanho da foto, para o arrastar/zoom
+  // continuar certo.
+  useEffect(() => {
+    if (!viewingImage) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const measure = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        const im = viewerImgRef.current;
+        if (im && im.offsetWidth > 0 && im.offsetHeight > 0) {
+          baseImgSizeRef.current = { w: im.offsetWidth, h: im.offsetHeight };
+        }
+      }, 250);
+    };
+    const onResize = () => {
+      setViewerLandscape(window.innerWidth > window.innerHeight);
+      setViewZoom(1);
+      setViewTx(0);
+      setViewTy(0);
+      measure();
+    };
+    setViewerLandscape(window.innerWidth > window.innerHeight);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onResize);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onResize);
+    };
+  }, [viewingImage]);
+
+  // Visualizador de foto no computador: Esc fecha só a foto; setas trocam de foto.
+  useEffect(() => {
+    if (!viewingImage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setViewingImage(null);
+      } else if (e.key === "ArrowRight" && noteImages.length > 1) {
+        e.stopPropagation();
+        goToImage(noteImages, viewIndex + 1);
+      } else if (e.key === "ArrowLeft" && noteImages.length > 1) {
+        e.stopPropagation();
+        goToImage(noteImages, viewIndex - 1);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewingImage, viewIndex, noteImages]);
+
   const [activeBlockIdx, setActiveBlockIdx] = useState<number | null>(null);
   const [selectedColor, setSelectedColor] = useState(NOTE_COLORS[0].value);
   // Última cor clara usada: o botão de modo escuro volta para ela (e nunca fica preso no escuro)
@@ -2950,6 +3005,18 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
   const canUndo = historyIdx > 0;
   const canRedo = historyIdx < history.length - 1;
+
+  const viewerZoomControls = (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }} onClick={(e) => e.stopPropagation()}>
+      <button onClick={() => zoomBy(-0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
+        <ZoomOut size={18} />
+      </button>
+      <span style={{ color: "#FFF", fontSize: 13, minWidth: 44, textAlign: "center" }}>{Math.round(viewZoom * 100)}%</span>
+      <button onClick={() => zoomBy(0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
+        <ZoomIn size={18} />
+      </button>
+    </div>
+  );
 
   return (
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); else onOpenChange(v); }} modal={false}>
@@ -4925,40 +4992,72 @@ ${blocksToPlainText(blocks)}`.trim();
           </div>
         )}
 
-        {/* Visualizador com lupa (ver a imagem ampliada, sem editar) */}
-        {viewingImage && (
+        {/* Visualizador com lupa (ver a imagem ampliada, sem editar).
+            Desenhado direto no corpo da página (portal) e em tela cheia de verdade:
+            antes ficava preso dentro da caixa de 480 px do editor, que aparece
+            quando o celular está deitado ou no computador. */}
+        {viewingImage && typeof document !== "undefined" && createPortal(
           <div
-            className="absolute inset-0 z-[85] flex flex-col"
-            style={{ background: `rgba(0,0,0,${viewCloseOpacity})` }}
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              zIndex: 90,
+              display: "flex",
+              flexDirection: "column",
+              pointerEvents: "auto",
+              touchAction: "none",
+              paddingLeft: "env(safe-area-inset-left)",
+              paddingRight: "env(safe-area-inset-right)",
+              background: `rgba(0,0,0,${viewCloseOpacity})`,
+            }}
             onClick={() => setViewingImage(null)}
           >
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: "12px 16px 4px", paddingTop: "calc(12px + env(safe-area-inset-top))", flexShrink: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>🔍 Ver ampliado</span>
+            <div
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                padding: viewerLandscape ? "4px 12px" : "12px 16px 4px",
+                paddingTop: viewerLandscape ? "calc(4px + env(safe-area-inset-top))" : "calc(12px + env(safe-area-inset-top))",
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 8 }}>
+                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>
+                  🔍 Ver ampliado
+                  {noteImages.length > 1 && viewerLandscape && (
+                    <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 400, marginLeft: 8 }}>{viewIndex + 1}/{noteImages.length}</span>
+                  )}
+                </span>
+                {viewerLandscape && viewerZoomControls}
                 <div style={{ display: "flex", gap: 4 }}>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleViewerShareOrDownload(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
                     title="Baixar / Compartilhar"
                   >
                     <Download size={20} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleViewerRotate(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
                     title="Girar"
                   >
                     <RotateCw size={20} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); setViewingImage(null); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    title="Fechar"
                   >
                     <X size={22} />
                   </button>
                 </div>
               </div>
-              {noteImages.length > 1 && (
+              {noteImages.length > 1 && !viewerLandscape && (
                 <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, marginTop: 2 }}>{viewIndex + 1}/{noteImages.length}</span>
               )}
             </div>
@@ -4967,6 +5066,8 @@ ${blocksToPlainText(blocks)}`.trim();
               ref={viewerContainerRef}
               style={{
                 flex: 1,
+                minHeight: 0,
+                minWidth: 0,
                 position: "relative",
                 overflow: "hidden",
                 display: "flex",
@@ -5023,16 +5124,13 @@ ${blocksToPlainText(blocks)}`.trim();
               )}
             </div>
 
-            <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center", padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => zoomBy(-0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
-                <ZoomOut size={18} />
-              </button>
-              <span style={{ color: "#FFF", fontSize: 13, minWidth: 44, textAlign: "center" }}>{Math.round(viewZoom * 100)}%</span>
-              <button onClick={() => zoomBy(0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
-                <ZoomIn size={18} />
-              </button>
-            </div>
-          </div>
+            {!viewerLandscape && (
+              <div style={{ padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
+                {viewerZoomControls}
+              </div>
+            )}
+          </div>,
+          document.body
         )}
 
         {/* Leitura acompanhada — palavra destacada enquanto a voz lê */}
