@@ -1526,7 +1526,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
    */
   const shouldSkipSave = (serialized: string, auto: boolean): boolean => {
     const base = loadedRef.current;
-    if (!base || !editingNote || base.id !== editingNote.id) return false;
+    if (!base || !editingNote) return false;
+    // O texto que está na tela ainda é de OUTRA nota (a tela trocou de nota e ainda não
+    // carregou a nova): nunca grava, senão o texto de uma nota iria por cima da outra.
+    if (base.id !== editingNote.id) return true;
     const bodyEmpty = !blocksHaveBody(blocks);
     const sameContent = serialized === base.content;
     if (sameContent && bodyEmpty) return true;

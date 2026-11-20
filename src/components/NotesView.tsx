@@ -189,6 +189,10 @@ export function NotesView({ notes, carregando, onAdd, onDelete, onUpdate, onSetR
   const openNew = () => { setEditingNote(null); setEditorReadOnly(false); setDialogOpen(true); };
 
   const openEdit = (note: Note) => {
+    // Com uma nota aberta no editor, a lista de trás não pode abrir outra nota por cima
+    // (acontecia ao tocar na lista com o celular deitado ou no computador, onde o editor
+    // é uma caixa menor que a tela). Feche a nota atual primeiro.
+    if (dialogOpen) return;
     if (note.isLocked) {
       setPendingUnlockNote(note);
       setLockNote(note);
