@@ -2103,6 +2103,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     : themeBase;
   const textColor = highContrast ? (isDark ? "#FFFFFF" : "#000000") : (isDark ? "#E0E0E0" : "#1A1A2E");
   const placeholderColor = isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.3)";
+  // Fundo do trecho selecionado no editor: branco, para a cor do texto aparecer de verdade
+  // enquanto está selecionado (o azul padrão do Android escondia a cor). Em nota escura
+  // e em alto contraste claro usa um cinza, senão o branco some.
+  const selectionBg = isDark ? "#4B5563" : (highContrast ? "#D1D5DB" : "#FFFFFF");
 
   // ── Undo / Redo ──────────────────────────────────────
   // Corrigido: antes, um único "Desfazer" apagava um trecho inteiro de
@@ -3066,12 +3070,13 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       <DialogContent className="!flex !flex-col !fixed !inset-0 !left-0 !top-0 !translate-x-0 !translate-y-0 !w-screen !max-w-none !max-h-none !rounded-none !shadow-none !border-0 !p-0 !gap-0 !bg-transparent z-50 sm:!inset-auto sm:!left-1/2 sm:!top-1/2 sm:!-translate-x-1/2 sm:!-translate-y-1/2 sm:!w-full sm:!max-w-[480px] sm:!h-[92vh] sm:!max-h-[92vh] sm:!rounded-2xl sm:!shadow-2xl sm:!overflow-hidden"
         style={{ height: "100dvh", overflow: "hidden" }}
         aria-describedby={undefined}
+        data-note-dark={isDark ? "true" : "false"}
         onOpenAutoFocus={(e) => e.preventDefault()}
         onPointerDownOutside={(e) => e.preventDefault()}
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Editor de Nota</DialogTitle>
-        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
+        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } .rich-text-editable::selection, .rich-text-editable ::selection { background-color: ${selectionBg}; } [data-note-dark="true"] .rich-text-editable [style*="26, 26, 46"], [data-note-dark="true"] .rich-text-editable [style*="#1a1a2e" i], [data-note-dark="true"] .note-rich-view [style*="26, 26, 46"], [data-note-dark="true"] .note-rich-view [style*="#1a1a2e" i] { color: ${textColor} !important; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
         {/* ── NOTEPAD CONTAINER ── */}
         <div
           className="flex flex-col"
@@ -3413,7 +3418,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                         }}
                       >
                         {consistentHtml(block) ? (
-                          <span dangerouslySetInnerHTML={{ __html: linkifyHtml(sanitizeRichHtml(consistentHtml(block)!)) }} />
+                          <span className="note-rich-view" dangerouslySetInnerHTML={{ __html: linkifyHtml(sanitizeRichHtml(consistentHtml(block)!)) }} />
                         ) : block.content ? (
                           renderTextWithLinks(block.content, block.style?.color || textColor, editorFontSize)
                         ) : (
@@ -4273,11 +4278,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                         onMouseDown={(e) => e.preventDefault()}
                         onClick={() => applyInlineFormat(activeBlockIdx, "foreColor", c)}
                         style={{
-                          width: 30, height: 30, borderRadius: "50%", background: c, flexShrink: 0,
-                          border: "2px solid transparent",
+                          width: 30, height: 30, borderRadius: "50%", background: c === TEXT_COLORS[0] ? textColor : c, flexShrink: 0,
+                          border: c === TEXT_COLORS[0] ? `2px solid ${theme.lines}` : "2px solid transparent",
                         }}
-                        title="Cor do texto selecionado"
-                        aria-label="Cor do texto selecionado"
+                        title={c === TEXT_COLORS[0] ? "Cor normal do texto (muda sozinha no modo noturno)" : "Cor do texto selecionado"}
+                        aria-label={c === TEXT_COLORS[0] ? "Cor normal do texto" : "Cor do texto selecionado"}
                       />
                     ))}
                     <div style={{ width: 1, height: 22, background: theme.lines, flexShrink: 0 }} />
@@ -4299,6 +4304,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   {/* Linha 2: fonte, alinhamento (parágrafo inteiro) e dividir o bloco no cursor */}
                   <div className="flex items-center gap-2 flex-wrap">
                     <button
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         const keys = Object.keys(FONT_OPTIONS);
                         const cur = blocks[activeBlockIdx].style?.font || "default";
@@ -4320,6 +4326,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                     ] as const).map((a) => (
                       <button
                         key={a.v}
+                        onMouseDown={(e) => e.preventDefault()}
                         onClick={() => applyTextStyle(activeBlockIdx, { align: a.v })}
                         title={`Alinhar à ${a.v === "left" ? "esquerda" : a.v === "center" ? "centro" : "direita"}`}
                         style={{
@@ -5297,7 +5304,7 @@ ${blocksToPlainText(blocks)}`.trim();
                         wordBreak: "break-word",
                       }}
                     >
-                      {consistentHtml(b) ? <span dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(consistentHtml(b)!) }} /> : b.content}
+                      {consistentHtml(b) ? <span className="note-rich-view" dangerouslySetInnerHTML={{ __html: sanitizeRichHtml(consistentHtml(b)!) }} /> : b.content}
                     </div>
                   );
                 }
