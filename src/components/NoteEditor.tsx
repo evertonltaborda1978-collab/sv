@@ -1417,6 +1417,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // fonte, formatação de texto etc.), deixando só uma linha limpa pra digitar.
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Painel de formatação do texto (botão "Aa" na barra de baixo): começa sempre fechado.
+  const [showFormatBar, setShowFormatBar] = useState(false);
+  useEffect(() => {
+    if (!open || readOnly) setShowFormatBar(false);
+  }, [open, readOnly]);
   const [editorFontSize, setEditorFontSize] = useState<number>(() => {
     const stored = parseInt(localStorage.getItem("editor_font_size") || "", 10);
     return [14, 16, 20, 24, 30].includes(stored) ? stored : 16;
@@ -4250,94 +4255,103 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             </>
           )}
 
-          {/* ── Barra de formatação de texto — fica EMBAIXO, logo acima do teclado e da barra ⋮ ✓ ✕
-               (antes ficava no topo e o menu Copiar/Recortar do Android cobria os botões).
-               Aparece sozinha quando um bloco de texto está em foco; uma linha só, que rola para o lado. ── */}
-          {!readOnly && !(calcRow && tecladoProprio) && activeBlockIdx !== null && blocks[activeBlockIdx]?.type === "text" && (
+          {/* ── Painel de formatação do texto — abre pelo botão "Aa" da barra de baixo.
+               Fica logo acima do teclado, em 2 linhas, sem precisar rolar para o lado.
+               O menu Copiar/Recortar do Android não cobre mais esses botões. ── */}
+          {!readOnly && showFormatBar && !(calcRow && tecladoProprio) && (
             <div
-              className="flex items-center gap-2 px-3 py-1.5 shrink-0 overflow-x-auto no-scrollbar"
-              style={{ background: theme.toolbarBg, borderTop: `1px solid ${theme.lines}`, WebkitOverflowScrolling: "touch", touchAction: "pan-x" }}
+              className="flex flex-col gap-2 px-3 py-2 shrink-0"
+              style={{ background: theme.toolbarBg, borderTop: `1px solid ${theme.lines}` }}
             >
-              {/* Cores — aplicam só no trecho selecionado (ou no que for digitado a partir do cursor) */}
-              {TEXT_COLORS.map((c) => (
-                <button
-                  key={c}
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => applyInlineFormat(activeBlockIdx, "foreColor", c)}
-                  style={{
-                    width: 22, height: 22, borderRadius: "50%", background: c, flexShrink: 0,
-                    border: "2px solid transparent",
-                  }}
-                  title="Cor do texto selecionado"
-                />
-              ))}
+              {activeBlockIdx !== null && blocks[activeBlockIdx]?.type === "text" ? (
+                <>
+                  {/* Linha 1: cores (só no trecho selecionado ou no que for digitado a seguir) + negrito */}
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    {TEXT_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => applyInlineFormat(activeBlockIdx, "foreColor", c)}
+                        style={{
+                          width: 30, height: 30, borderRadius: "50%", background: c, flexShrink: 0,
+                          border: "2px solid transparent",
+                        }}
+                        title="Cor do texto selecionado"
+                        aria-label="Cor do texto selecionado"
+                      />
+                    ))}
+                    <div style={{ width: 1, height: 22, background: theme.lines, flexShrink: 0 }} />
+                    <button
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applyInlineFormat(activeBlockIdx, "bold")}
+                      title="Negrito no texto selecionado"
+                      aria-label="Negrito no texto selecionado"
+                      style={{
+                        width: 34, height: 34, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                        background: "transparent",
+                        border: `1px solid ${theme.lines}`, color: theme.text,
+                      }}
+                    >
+                      <BoldIcon size={16} />
+                    </button>
+                  </div>
 
-              <div style={{ width: 1, height: 20, background: theme.lines, flexShrink: 0 }} />
+                  {/* Linha 2: fonte, alinhamento (parágrafo inteiro) e dividir o bloco no cursor */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => {
+                        const keys = Object.keys(FONT_OPTIONS);
+                        const cur = blocks[activeBlockIdx].style?.font || "default";
+                        const next = keys[(keys.indexOf(cur) + 1) % keys.length];
+                        applyTextStyle(activeBlockIdx, { font: next });
+                      }}
+                      title="Trocar fonte (parágrafo inteiro)"
+                      style={{ fontSize: 12, fontWeight: 700, padding: "0 10px", height: 34, borderRadius: 8, background: "transparent", border: `1px solid ${theme.lines}`, color: theme.text, flexShrink: 0, whiteSpace: "nowrap" }}
+                    >
+                      {FONT_OPTIONS[blocks[activeBlockIdx].style?.font || "default"].label}
+                    </button>
 
-              {/* Fonte (cicla entre as opções) — vale pro parágrafo inteiro */}
-              <button
-                onClick={() => {
-                  const keys = Object.keys(FONT_OPTIONS);
-                  const cur = blocks[activeBlockIdx].style?.font || "default";
-                  const next = keys[(keys.indexOf(cur) + 1) % keys.length];
-                  applyTextStyle(activeBlockIdx, { font: next });
-                }}
-                title="Trocar fonte (parágrafo inteiro)"
-                style={{ fontSize: 11, fontWeight: 700, padding: "4px 8px", borderRadius: 8, background: "transparent", border: `1px solid ${theme.lines}`, color: theme.text, flexShrink: 0, whiteSpace: "nowrap" }}
-              >
-                {FONT_OPTIONS[blocks[activeBlockIdx].style?.font || "default"].label}
-              </button>
+                    <div style={{ width: 1, height: 22, background: theme.lines, flexShrink: 0 }} />
 
-              {/* Negrito — aplica só no trecho selecionado */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => applyInlineFormat(activeBlockIdx, "bold")}
-                title="Negrito no texto selecionado"
-                style={{
-                  width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                  background: "transparent",
-                  border: `1px solid ${theme.lines}`, color: theme.text,
-                }}
-              >
-                <BoldIcon size={15} />
-              </button>
+                    {([
+                      { v: "left", icon: <AlignLeft size={16} /> },
+                      { v: "center", icon: <AlignCenter size={16} /> },
+                      { v: "right", icon: <AlignRight size={16} /> },
+                    ] as const).map((a) => (
+                      <button
+                        key={a.v}
+                        onClick={() => applyTextStyle(activeBlockIdx, { align: a.v })}
+                        title={`Alinhar à ${a.v === "left" ? "esquerda" : a.v === "center" ? "centro" : "direita"}`}
+                        style={{
+                          width: 34, height: 34, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                          background: (blocks[activeBlockIdx].style?.align || "left") === a.v ? theme.borderAccent : "transparent",
+                          border: `1px solid ${theme.lines}`, color: theme.text,
+                        }}
+                      >
+                        {a.icon}
+                      </button>
+                    ))}
 
-              <div style={{ width: 1, height: 20, background: theme.lines, flexShrink: 0 }} />
+                    <div style={{ width: 1, height: 22, background: theme.lines, flexShrink: 0 }} />
 
-              {/* Alinhamento — vale pro parágrafo inteiro */}
-              {([
-                { v: "left", icon: <AlignLeft size={15} /> },
-                { v: "center", icon: <AlignCenter size={15} /> },
-                { v: "right", icon: <AlignRight size={15} /> },
-              ] as const).map((a) => (
-                <button
-                  key={a.v}
-                  onClick={() => applyTextStyle(activeBlockIdx, { align: a.v })}
-                  title={`Alinhar à ${a.v === "left" ? "esquerda" : a.v === "center" ? "centro" : "direita"}`}
-                  style={{
-                    width: 30, height: 30, borderRadius: 8, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
-                    background: (blocks[activeBlockIdx].style?.align || "left") === a.v ? theme.borderAccent : "transparent",
-                    border: `1px solid ${theme.lines}`, color: theme.text,
-                  }}
-                >
-                  {a.icon}
-                </button>
-              ))}
-
-              <div style={{ width: 1, height: 20, background: theme.lines, flexShrink: 0 }} />
-
-              {/* Dividir bloco no cursor — permite ter cores/formatos diferentes em cada parte */}
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => splitBlockAtCursor(activeBlockIdx)}
-                title="Dividir texto aqui (cada parte pode ter formatação diferente)"
-                style={{
-                  display: "flex", alignItems: "center", gap: 4, padding: "6px 8px", borderRadius: 8, flexShrink: 0,
-                  background: "transparent", border: `1px solid ${theme.lines}`, color: theme.text, fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
-                }}
-              >
-                <Scissors size={14} /> Dividir aqui
-              </button>
+                    <button
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => splitBlockAtCursor(activeBlockIdx)}
+                      title="Dividir texto aqui (cada parte pode ter formatação diferente)"
+                      style={{
+                        display: "flex", alignItems: "center", gap: 4, padding: "0 10px", height: 34, borderRadius: 8, flexShrink: 0,
+                        background: "transparent", border: `1px solid ${theme.lines}`, color: theme.text, fontSize: 12, fontWeight: 600, whiteSpace: "nowrap",
+                      }}
+                    >
+                      <Scissors size={14} /> Dividir aqui
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: theme.textMuted, textAlign: "center", padding: "6px 0" }}>
+                  Toque dentro de um texto para formatar
+                </div>
+              )}
             </div>
           )}
 
@@ -4403,7 +4417,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 gap: 12,
               }}
             >
-              {/* FAB ⋮ — esquerda */}
+              {/* Esquerda: FAB ⋮ e botão Aa (abre o painel de formatação) */}
+              <div className="flex items-center gap-2">
               <div className="relative">
                 {showFab && (
                   <>
@@ -4468,6 +4483,24 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   )}
                 </button>
               </div>
+              <button
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setShowFormatBar((v) => !v)}
+                className="flex items-center justify-center rounded-full transition-all active:scale-95"
+                style={{
+                  width: 40, height: 40,
+                  background: showFormatBar ? "#1A1A2E" : theme.headerBg,
+                  border: `2px solid ${theme.borderAccent}`,
+                  color: showFormatBar ? "#FFF" : theme.textMuted,
+                  fontSize: 15, fontWeight: 800, lineHeight: 1,
+                }}
+                title="Formatação do texto (cor, negrito, alinhar, fonte, dividir)"
+                aria-label="Formatação do texto"
+                aria-pressed={showFormatBar}
+              >
+                Aa
+              </button>
+              </div>
 
               {/* Salvar ✓ — centro */}
               <button
@@ -4480,6 +4513,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 <Check size={20} color="#FFF" strokeWidth={2.5} />
               </button>
 
+              <div className="flex items-center justify-end gap-2">
+              <div style={{ width: 40, height: 40 }} aria-hidden />
               {/* Fechar — direita, mesmo tamanho do "⋮" à esquerda. Antes era
                   só um espaço vazio pra centralizar o Salvar; agora dá acesso
                   rápido pra fechar a nota sem esticar o polegar até o topo. */}
@@ -4492,6 +4527,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               >
                 <X size={20} />
               </button>
+              </div>
             </div>
           ) : (
             <div
