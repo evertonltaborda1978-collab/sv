@@ -1035,6 +1035,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [viewCloseOpacity, setViewCloseOpacity] = useState(1);
   // Visualizador de foto: true quando a tela do aparelho está deitada (horizontal).
   const [viewerLandscape, setViewerLandscape] = useState(false);
+  // Botões do visualizador: aparecem ao abrir, somem sozinhos e voltam com um toque na foto.
+  const [viewerUiVisible, setViewerUiVisible] = useState(true);
+  const viewerTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const viewerHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const viewerContainerRef = useRef<HTMLDivElement>(null);
   const viewerImgRef = useRef<HTMLImageElement>(null);
   const baseImgSizeRef = useRef({ w: 0, h: 0 });
@@ -1223,6 +1227,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       const dty = e.clientY - g.lastTapY;
       const isDouble = now - g.lastTapTime < 320 && Math.hypot(dtx, dty) < 40;
       if (isDouble) {
+        if (viewerTapTimerRef.current) {
+          clearTimeout(viewerTapTimerRef.current);
+          viewerTapTimerRef.current = null;
+        }
         if (viewZoom > 1.01) {
           setViewZoom(1);
           setViewTx(0);
@@ -1245,6 +1253,17 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         g.lastTapTime = now;
         g.lastTapX = e.clientX;
         g.lastTapY = e.clientY;
+        // toque simples: mostra/esconde os botões (espera um instante para não
+        // confundir com o primeiro toque de um toque duplo)
+        if (viewerTapTimerRef.current) clearTimeout(viewerTapTimerRef.current);
+        viewerTapTimerRef.current = setTimeout(() => {
+          viewerTapTimerRef.current = null;
+          if (viewerHideTimerRef.current) {
+            clearTimeout(viewerHideTimerRef.current);
+            viewerHideTimerRef.current = null;
+          }
+          setViewerUiVisible((v) => !v);
+        }, 330);
       }
     }
     g.mode = "idle";
@@ -1332,6 +1351,22 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       if (timer) clearTimeout(timer);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("orientationchange", onResize);
+    };
+  }, [viewingImage]);
+
+  // Ao abrir a foto (ou trocar de foto) os botões aparecem e somem sozinhos depois de
+  // 2,5 segundos, deixando só a foto na tela.
+  useEffect(() => {
+    if (!viewingImage) return;
+    setViewerUiVisible(true);
+    if (viewerHideTimerRef.current) clearTimeout(viewerHideTimerRef.current);
+    viewerHideTimerRef.current = setTimeout(() => {
+      viewerHideTimerRef.current = null;
+      setViewerUiVisible(false);
+    }, 2500);
+    return () => {
+      if (viewerHideTimerRef.current) { clearTimeout(viewerHideTimerRef.current); viewerHideTimerRef.current = null; }
+      if (viewerTapTimerRef.current) { clearTimeout(viewerTapTimerRef.current); viewerTapTimerRef.current = null; }
     };
   }, [viewingImage]);
 
@@ -4993,9 +5028,9 @@ ${blocksToPlainText(blocks)}`.trim();
         )}
 
         {/* Visualizador com lupa (ver a imagem ampliada, sem editar).
-            Desenhado direto no corpo da página (portal) e em tela cheia de verdade:
-            antes ficava preso dentro da caixa de 480 px do editor, que aparece
-            quando o celular está deitado ou no computador. */}
+            Desenhado direto no corpo da página (portal), com a foto ocupando a tela
+            inteira, como numa foto da galeria. Os botões flutuam por cima, somem
+            sozinhos e voltam com um toque na foto. */}
         {viewingImage && typeof document !== "undefined" && createPortal(
           <div
             style={{
@@ -5005,70 +5040,20 @@ ${blocksToPlainText(blocks)}`.trim();
               right: 0,
               bottom: 0,
               zIndex: 90,
-              display: "flex",
-              flexDirection: "column",
               pointerEvents: "auto",
               touchAction: "none",
-              paddingLeft: "env(safe-area-inset-left)",
-              paddingRight: "env(safe-area-inset-right)",
               background: `rgba(0,0,0,${viewCloseOpacity})`,
             }}
             onClick={() => setViewingImage(null)}
           >
             <div
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                padding: viewerLandscape ? "4px 12px" : "12px 16px 4px",
-                paddingTop: viewerLandscape ? "calc(4px + env(safe-area-inset-top))" : "calc(12px + env(safe-area-inset-top))",
-                flexShrink: 0,
-              }}
-            >
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 8 }}>
-                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>
-                  🔍 Ver ampliado
-                  {noteImages.length > 1 && viewerLandscape && (
-                    <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 400, marginLeft: 8 }}>{viewIndex + 1}/{noteImages.length}</span>
-                  )}
-                </span>
-                {viewerLandscape && viewerZoomControls}
-                <div style={{ display: "flex", gap: 4 }}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleViewerShareOrDownload(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
-                    title="Baixar / Compartilhar"
-                  >
-                    <Download size={20} />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleViewerRotate(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
-                    title="Girar"
-                  >
-                    <RotateCw size={20} />
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setViewingImage(null); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
-                    title="Fechar"
-                  >
-                    <X size={22} />
-                  </button>
-                </div>
-              </div>
-              {noteImages.length > 1 && !viewerLandscape && (
-                <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, marginTop: 2 }}>{viewIndex + 1}/{noteImages.length}</span>
-              )}
-            </div>
-
-            <div
               ref={viewerContainerRef}
               style={{
-                flex: 1,
-                minHeight: 0,
-                minWidth: 0,
-                position: "relative",
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
                 overflow: "hidden",
                 display: "flex",
                 alignItems: "center",
@@ -5102,7 +5087,7 @@ ${blocksToPlainText(blocks)}`.trim();
                 }}
               />
 
-              {noteImages.length > 1 && viewZoom <= 1.01 && (
+              {noteImages.length > 1 && viewZoom <= 1.01 && viewerUiVisible && (
                 <>
                   {viewIndex > 0 && (
                     <button
@@ -5124,9 +5109,77 @@ ${blocksToPlainText(blocks)}`.trim();
               )}
             </div>
 
+            {/* Botões de cima (flutuam sobre a foto; o toque passa para a foto onde não há botão) */}
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                zIndex: 2,
+                pointerEvents: "none",
+                opacity: viewerUiVisible ? 1 : 0,
+                transition: "opacity 0.2s ease",
+                background: "linear-gradient(to bottom, rgba(0,0,0,0.65), rgba(0,0,0,0))",
+                paddingTop: viewerLandscape ? "calc(4px + env(safe-area-inset-top))" : "calc(12px + env(safe-area-inset-top))",
+                paddingBottom: 14,
+                paddingLeft: "calc(12px + env(safe-area-inset-left))",
+                paddingRight: "calc(12px + env(safe-area-inset-right))",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 8, pointerEvents: viewerUiVisible ? "auto" : "none" }} onClick={(e) => e.stopPropagation()}>
+                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>
+                  🔍 Ver ampliado
+                  {noteImages.length > 1 && (
+                    <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 400, marginLeft: 8 }}>{viewIndex + 1}/{noteImages.length}</span>
+                  )}
+                </span>
+                {viewerLandscape && viewerZoomControls}
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleViewerShareOrDownload(); }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    title="Baixar / Compartilhar"
+                  >
+                    <Download size={20} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleViewerRotate(); }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    title="Girar"
+                  >
+                    <RotateCw size={20} />
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setViewingImage(null); }}
+                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    title="Fechar"
+                  >
+                    <X size={22} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Zoom de baixo (só com o celular em pé; na horizontal o zoom fica em cima) */}
             {!viewerLandscape && (
-              <div style={{ padding: "10px 16px calc(10px + env(safe-area-inset-bottom))", flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
-                {viewerZoomControls}
+              <div
+                style={{
+                  position: "absolute",
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 2,
+                  pointerEvents: "none",
+                  opacity: viewerUiVisible ? 1 : 0,
+                  transition: "opacity 0.2s ease",
+                  background: "linear-gradient(to top, rgba(0,0,0,0.65), rgba(0,0,0,0))",
+                  padding: "14px 16px calc(10px + env(safe-area-inset-bottom))",
+                }}
+              >
+                <div style={{ pointerEvents: viewerUiVisible ? "auto" : "none" }} onClick={(e) => e.stopPropagation()}>
+                  {viewerZoomControls}
+                </div>
               </div>
             )}
           </div>,
