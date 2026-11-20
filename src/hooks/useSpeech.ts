@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { TextToSpeech } from "@capacitor-community/text-to-speech";
+import { TextToSpeech, QueueStrategy } from "@capacitor-community/text-to-speech";
 import { prepareForSpeech, splitForSpeech } from "@/lib/noteText";
 
 const LANG = "pt-BR";
 const RATE_KEY = "readalong_rate";
+
+/**
+ * No Android (app instalado), quantos trechos são mandados de uma vez para o motor de voz
+ * do celular. Com a tela bloqueada o app pode ficar "congelado" e não conseguir mandar o
+ * próximo trecho a tempo; como o motor de voz já recebeu uma fila grande, ele continua
+ * lendo sozinho. Conforme os trechos terminam, o app completa a fila.
+ */
+const FILA_NATIVA = 60;
 
 /** Velocidades oferecidas na tela de leitura. */
 export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
@@ -201,7 +209,14 @@ export function useSpeech() {
       runRef.current += 1;
       clearEstimator();
       try {
-        if (isWebSupported()) window.speechSynthesis.cancel();
+        if (isNative()) {
+          // Para também o que já estava na fila do motor de voz do celular.
+          TextToSpeech.stop().catch(() => {
+            /* ignora */
+          });
+        } else if (isWebSupported()) {
+          window.speechSynthesis.cancel();
+        }
       } catch {
         /* ignora */
       }
@@ -213,10 +228,98 @@ export function useSpeech() {
     [clearEstimator]
   );
 
+  /**
+   * Android (app instalado): monta o "plano" de trechos a falar a partir de `index` e manda
+   * para o motor de voz do celular em FILA (até FILA_NATIVA trechos à frente). Se a tela
+   * bloquear e o app ficar congelado, o motor continua lendo a fila sozinho. Cada vez que um
+   * trecho termina, o app atualiza o destaque e completa a fila.
+   */
+  const nativeRunFrom = useCallback(
+    (index: number, startChar: number, myRun: number) => {
+      if (runRef.current !== myRun) return;
+      const segs = segsRef.current;
+
+      const plano: { index: number; startChar: number; prefixLen: number; text: string }[] = [];
+      for (let i = index; i < segs.length; i++) {
+        const sc = i === index ? startChar : 0;
+        const seg = segs[i];
+        const body = seg.speak.slice(sc);
+        if (!body.trim()) continue;
+        const prefix = sc === 0 ? seg.prefix ?? "" : "";
+        plano.push({ index: i, startChar: sc, prefixLen: prefix.length, text: prefix + body });
+      }
+
+      if (plano.length === 0) {
+        clearEstimator();
+        setSpeaking(false);
+        setFinished(true);
+        return;
+      }
+
+      let enfileirados = 0; // quantos já foram mandados ao motor de voz
+      let concluidos = 0; // quantos o motor de voz já terminou de falar
+
+      // Marca o trecho `n` do plano como o que está sendo falado agora.
+      const apontar = (n: number) => {
+        const p = plano[n];
+        indexRef.current = p.index;
+        baseRef.current = p.startChar - p.prefixLen; // posição no motor + base = posição no texto mostrado
+        boundarySeenRef.current = false;
+        setPosition({ index: p.index, start: p.startChar, end: p.startChar });
+        startEstimator(myRun, p.index, p.startChar, p.prefixLen, p.text.length - p.prefixLen);
+      };
+
+      const enfileirar = () => {
+        while (enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA) {
+          const n = enfileirados++;
+          TextToSpeech.speak({
+            text: plano[n].text,
+            lang: LANG,
+            rate: rateRef.current,
+            pitch: 1.0,
+            volume: 1.0,
+            category: "ambient",
+            // O primeiro trecho começa do zero (interrompe qualquer fala anterior);
+            // os outros entram na fila, um depois do outro.
+            queueStrategy: n === 0 ? QueueStrategy.Flush : QueueStrategy.Add,
+          })
+            .then(() => {
+              if (runRef.current !== myRun) return; // foi cancelada de propósito
+              concluidos = Math.max(concluidos, n + 1);
+              if (concluidos >= plano.length) {
+                clearEstimator();
+                setSpeaking(false);
+                setFinished(true);
+                return;
+              }
+              apontar(concluidos);
+              enfileirar();
+            })
+            .catch((err) => {
+              if (runRef.current !== myRun) return; // foi cancelada de propósito
+              const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
+              handleError(myRun, txt.includes("lang") || txt.includes("voice") ? "voice-unavailable" : "error");
+            });
+        }
+      };
+
+      apontar(0);
+      enfileirar();
+    },
+    [clearEstimator, startEstimator, handleError]
+  );
+
   /** Fala o trecho `index` (a partir do caractere `startChar`) e encadeia os próximos. */
   const runFrom = useCallback(
     (index: number, startChar: number, myRun: number) => {
       if (runRef.current !== myRun) return;
+
+      // Android (app instalado): fila no motor de voz do celular (ver nativeRunFrom).
+      if (native) {
+        nativeRunFrom(index, startChar, myRun);
+        return;
+      }
+
       const segs = segsRef.current;
       if (index >= segs.length) {
         clearEstimator();
@@ -246,25 +349,6 @@ export function useSpeech() {
         clearEstimator();
         runFromRef.current(index + 1, 0, myRun);
       };
-
-      if (native) {
-        // speak() só resolve quando o trecho termina de ser falado.
-        TextToSpeech.speak({
-          text,
-          lang: LANG,
-          rate: rateRef.current,
-          pitch: 1.0,
-          volume: 1.0,
-          category: "ambient",
-        })
-          .then(goNext)
-          .catch((err) => {
-            if (runRef.current !== myRun) return; // foi cancelada de propósito
-            const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
-            handleError(myRun, txt.includes("lang") || txt.includes("voice") ? "voice-unavailable" : "error");
-          });
-        return;
-      }
 
       // Navegador / PWA / Safari
       try {
@@ -296,7 +380,7 @@ export function useSpeech() {
         handleError(myRun, "error");
       }
     },
-    [native, clearEstimator, startEstimator, handleError]
+    [native, nativeRunFrom, clearEstimator, startEstimator, handleError]
   );
   runFromRef.current = runFrom;
 
