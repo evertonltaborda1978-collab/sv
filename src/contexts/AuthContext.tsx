@@ -72,6 +72,21 @@ function readCachedSessionFast(): any | null {
   return null;
 }
 
+// Espera uma promessa por no máximo "ms" milissegundos; se estourar (ou der
+// erro), devolve o valor reserva em vez de ficar esperando para sempre.
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then((v) => {
+      clearTimeout(t);
+      resolve(v);
+    }).catch(() => {
+      clearTimeout(t);
+      resolve(fallback);
+    });
+  });
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,24 +126,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     );
 
-    // Sempre entra direto, reaproveitando a sessão salva no aparelho — com
-    // internet boa, fraca ou nenhuma. Só volta a pedir login de verdade
-    // depois que a própria pessoa tocar em "Sair" (ver softLoggedOutRef
-    // acima). Isso evita ficar preso na tela de login quando o sinal está
-    // fraco demais pra completar um login novo, mas a sessão salva já
-    // provaria quem é.
-    (supabase.auth as any)
-      .getSession()
-      .then(({ data }: any) => {
-        if (!isMounted) return;
-        setSession(data?.session ?? null);
-      })
-      .catch(() => {})
-      .finally(() => {
-        settling = false;
-        if (!isMounted) return;
-        setLoading(false);
-      });
+    const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+
+    if (cachedSession && offline) {
+      // SEM INTERNET e com sessão guardada: entra direto e NÃO chama o
+      // getSession() do Supabase. Ele tentaria renovar o token pela rede,
+      // ficaria tentando por vários minutos e, ao falhar, devolveria
+      // "sem sessão" — o que jogava o app de volta na tela de login
+      // ("autenticando...") mesmo com a pessoa já logada.
+      settling = false;
+      setLoading(false);
+    } else {
+      // Com internet (boa, fraca ou nenhuma que o aparelho não percebeu):
+      // confere a sessão com o servidor, mas no máximo 4 segundos.
+      withTimeout<any>(
+        (supabase.auth as any).getSession(),
+        4000,
+        { data: { session: null }, error: { name: "Timeout", message: "timeout" } }
+      )
+        .then(({ data, error }: any) => {
+          if (!isMounted) return;
+          if (data?.session) {
+            setSession(data.session);
+            return;
+          }
+          // Não veio sessão do servidor. Se foi só falha de rede (ou tempo
+          // esgotado) e já existe uma sessão guardada no aparelho, MANTÉM
+          // ela — não derruba quem já estava logado só por falta de sinal.
+          const networkFail =
+            (typeof navigator !== "undefined" && navigator.onLine === false) ||
+            /timeout|fetch|network|retryable/i.test(`${error?.name ?? ""} ${error?.message ?? ""}`);
+          if (cachedSession && networkFail) return;
+          setSession(null);
+        })
+        .catch(() => {})
+        .finally(() => {
+          settling = false;
+          if (!isMounted) return;
+          setLoading(false);
+        });
+    }
 
     return () => {
       isMounted = false;
@@ -192,10 +229,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // travar — a digital já provou quem é, não precisa também de rede.
   const restoreSession = async (): Promise<boolean> => {
     try {
-      const { data } = await (supabase.auth as any).getSession();
-      if (data?.session) {
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const cached = readCachedSessionFast();
+      if (offline && cached) {
         softLoggedOutRef.current = false;
-        setSession(data.session);
+        setSession(cached);
+        return true;
+      }
+      const { data } = await withTimeout<any>(
+        (supabase.auth as any).getSession(),
+        4000,
+        { data: { session: null } }
+      );
+      const found = data?.session ?? cached;
+      if (found) {
+        softLoggedOutRef.current = false;
+        setSession(found);
         return true;
       }
       return false;

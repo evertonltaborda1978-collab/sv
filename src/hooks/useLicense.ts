@@ -13,6 +13,32 @@ function readCache(): MyLicense | null {
   }
 }
 
+// E-mail da sessão guardada no aparelho (sem chamar a rede).
+function readCachedEmail(): string | null {
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("sb-") && key.endsWith("-auth-token")) {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        const session = parsed?.currentSession || parsed;
+        const mail = session?.user?.email;
+        if (mail) return String(mail).toLowerCase();
+      }
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+// Espera no máximo "ms" milissegundos; se estourar ou der erro, usa o valor reserva.
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(fallback), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }).catch(() => { clearTimeout(t); resolve(fallback); });
+  });
+}
+
 /**
  * Estado da licença do usuário logado.
  * Offline usa a última licença conhecida (o app precisa funcionar na fábrica sem internet).
@@ -20,18 +46,31 @@ function readCache(): MyLicense | null {
 export function useLicense() {
   const [license, setLicense] = useState<MyLicense | null>(readCache());
   const [loading, setLoading] = useState(true);
-  const [email, setEmail] = useState<string | null>(null);
+  const [email, setEmail] = useState<string | null>(readCachedEmail());
 
   const refresh = useCallback(async () => {
-    const { data } = await supabase.auth.getSession();
+    // Sem internet: não chama o Supabase (o getSession dele ficaria
+    // tentando renovar o token pela rede e travaria). Usa o que está guardado.
+    if (typeof navigator !== "undefined" && !navigator.onLine) {
+      setEmail(readCachedEmail());
+      setLoading(false);
+      return;
+    }
+    const { data } = await withTimeout<any>(
+      supabase.auth.getSession(),
+      4000,
+      { data: { session: null }, timedOut: true }
+    ).then((r: any) => (r?.timedOut ? { data: { session: undefined, timedOut: true } } : r));
+    if (data?.timedOut) {
+      // Sinal fraco demais: segue com a última licença conhecida.
+      setEmail(readCachedEmail());
+      setLoading(false);
+      return;
+    }
     setEmail(data.session?.user?.email?.toLowerCase() ?? null);
     if (!data.session) {
       setLicense(null);
       try { localStorage.removeItem(CACHE_KEY); } catch { /* ignore */ }
-      setLoading(false);
-      return;
-    }
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
       setLoading(false);
       return;
     }
