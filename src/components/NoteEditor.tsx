@@ -5076,8 +5076,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 </div>
               </div>
 
-              {/* Direita: botões que já existiam */}
-              <div className="flex items-center gap-2">
+              {/* Linha de baixo: Modo visualização à esquerda, Editar à direita */}
+              <div className="flex items-center justify-between gap-2 w-full">
                 <span className="text-[13px] font-semibold whitespace-nowrap" style={{ color: theme.textMuted }}>👁️ Modo visualização</span>
                 {editingNote && (
                   <button
