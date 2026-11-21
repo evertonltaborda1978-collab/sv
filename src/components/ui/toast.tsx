@@ -14,10 +14,10 @@ const ToastViewport = React.forwardRef<
   <ToastPrimitives.Viewport
     ref={ref}
     className={cn(
-      // Centralizado no meio da tela. "pointer-events-none" no quadro e
-      // "pointer-events-auto" em cada mensagem (ver toastVariants) evita
-      // que a área invisível bloqueie toques no app por baixo.
-      "pointer-events-none fixed left-1/2 top-1/2 z-[100] flex max-h-screen w-full max-w-[420px] -translate-x-1/2 -translate-y-1/2 flex-col gap-2 p-4",
+      // Mensagens no TOPO da tela (respeitando a barra de status do celular), nunca no meio.
+      // "pointer-events-none" no quadro e "pointer-events-auto" em cada mensagem
+      // (ver toastVariants) evita que a área invisível bloqueie toques no app por baixo.
+      "pointer-events-none fixed left-1/2 top-0 z-[100] flex max-h-screen w-full max-w-[420px] -translate-x-1/2 flex-col gap-2 px-3 pb-3 pt-[calc(env(safe-area-inset-top)+0.5rem)]",
       className,
     )}
     {...props}
@@ -26,7 +26,7 @@ const ToastViewport = React.forwardRef<
 ToastViewport.displayName = ToastPrimitives.Viewport.displayName;
 
 const toastVariants = cva(
-  "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-md border p-6 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
+  "group pointer-events-auto relative flex w-full items-center justify-between space-x-4 overflow-hidden rounded-md border p-3 pr-8 shadow-lg transition-all data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:zoom-out-95 data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
   {
     variants: {
       variant: {
