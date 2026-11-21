@@ -1226,7 +1226,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // Corte de fotos: ferramenta com que o editor abre, e o "cortar ao adicionar" (uma foto de cada vez, na fila)
   const [annotatorStartTool, setAnnotatorStartTool] = useState<DrawTool | null>(null);
   const [cropOnAdd, setCropOnAdd] = useState<boolean>(() => {
-    try { return localStorage.getItem("nb_crop_on_add") !== "0"; } catch { return true; }
+    try { return localStorage.getItem("nb_crop_on_add") === "1"; } catch { return false; }
   });
   const [addCrop, setAddCrop] = useState<{ dataUrl: string; index: number; total: number } | null>(null);
   const addCropQueueRef = useRef<{ files: File[]; i: number; results: File[] } | null>(null);
@@ -2769,8 +2769,14 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const addPhotos = async (files: File[]) => {
     if (files.length === 0) return;
     if (!cropOnAdd) { await insertImagesAtBlock(files); return; }
-    addCropQueueRef.current = { files, i: 0, results: [] };
-    await openAddCropAt(0);
+    try {
+      addCropQueueRef.current = { files, i: 0, results: [] };
+      await openAddCropAt(0);
+    } catch {
+      addCropQueueRef.current = null;
+      setAddCrop(null);
+      await insertImagesAtBlock(files);
+    }
   };
 
   const removeImageBlock = (index: number) => {
@@ -4874,7 +4880,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                     >
                       {[
                         { icon: <Camera size={18} />, label: "Câmera", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("camera"); if (f) await addPhotos([f]); } else { cameraInputRef.current?.click(); } } },
-                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const files = await pickManyFromGallery(); await addPhotos(files); } else { fileInputRef.current?.click(); } } },
+                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("gallery"); if (f) await addPhotos([f]); } else { fileInputRef.current?.click(); } } },
+                        ...(isNative() ? [{ icon: <span aria-hidden style={{ fontSize: 16, lineHeight: 1 }}>🖼️</span>, label: "Galeria (várias)", action: () => { setShowFab(false); fileInputRef.current?.click(); } }] : []),
                         { icon: <Crop size={18} />, label: cropOnAdd ? "Cortar ao adicionar: sim" : "Cortar ao adicionar: não", action: () => { toggleCropOnAdd(); } },
                         { icon: ocrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanSearch size={18} />, label: "OCR", action: () => { setShowOcrModal(true); setShowFab(false); } },
                         { icon: qrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanLine size={18} />, label: "QR", action: () => { handleStartQrScanner(); setShowFab(false); } },
