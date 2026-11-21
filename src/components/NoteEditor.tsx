@@ -1391,6 +1391,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   }, [viewingImage, viewIndex, noteImages]);
 
   const [activeBlockIdx, setActiveBlockIdx] = useState<number | null>(null);
+  // Contorno em volta do trecho selecionado: um retângulo por linha, desenhado por cima do texto.
+  const selHostRef = useRef<HTMLDivElement | null>(null);
+  const [selRects, setSelRects] = useState<Array<{ l: number; t: number; w: number; h: number }>>([]);
+  const selRectsKeyRef = useRef("");
   const [selectedColor, setSelectedColor] = useState(NOTE_COLORS[0].value);
   // Última cor clara usada: o botão de modo escuro volta para ela (e nunca fica preso no escuro)
   const lastLightColorRef = useRef<string>(NOTE_COLORS[0].value);
@@ -2103,10 +2107,8 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     : themeBase;
   const textColor = highContrast ? (isDark ? "#FFFFFF" : "#000000") : (isDark ? "#E0E0E0" : "#1A1A2E");
   const placeholderColor = isDark ? "rgba(255,255,255,0.35)" : "rgba(0,0,0,0.3)";
-  // Fundo do trecho selecionado no editor: branco, para a cor do texto aparecer de verdade
-  // enquanto está selecionado (o azul padrão do Android escondia a cor). Em nota escura
-  // e em alto contraste claro usa um cinza, senão o branco some.
-  const selectionBg = isDark ? "#4B5563" : (highContrast ? "#D1D5DB" : "#FFFFFF");
+  // Cor do contorno desenhado em volta do trecho selecionado (o fundo da seleção fica transparente).
+  const selectionOutline = isDark ? "#5EEAD4" : "#0F766E";
 
   // ── Undo / Redo ──────────────────────────────────────
   // Corrigido: antes, um único "Desfazer" apagava um trecho inteiro de
@@ -2876,6 +2878,95 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     focusedBlockRef.current = blockIndex;
   }, []);
 
+  // Calcula os retângulos (um por linha) do texto selecionado no editor, para desenhar o contorno.
+  useEffect(() => {
+    const clear = () => {
+      if (selRectsKeyRef.current !== "") {
+        selRectsKeyRef.current = "";
+        setSelRects([]);
+      }
+    };
+    if (!open || readOnly) { clear(); return; }
+    let raf = 0;
+    const compute = () => {
+      raf = 0;
+      try {
+        const host = selHostRef.current;
+        const sel = window.getSelection();
+        if (!host || !sel || sel.rangeCount === 0 || sel.isCollapsed) { clear(); return; }
+        const range = sel.getRangeAt(0);
+        const anc = range.commonAncestorContainer;
+        const ancEl = anc.nodeType === 1 ? (anc as Element) : anc.parentElement;
+        if (!ancEl || !host.contains(ancEl) || !ancEl.closest(".rich-text-editable")) { clear(); return; }
+
+        // só os retângulos do TEXTO selecionado (ignora caixas de blocos inteiros)
+        const textNodes: Text[] = [];
+        if (anc.nodeType === 3) {
+          textNodes.push(anc as Text);
+        } else {
+          const walker = document.createTreeWalker(anc, NodeFilter.SHOW_TEXT);
+          let n: Node | null = walker.nextNode();
+          while (n && textNodes.length < 400) {
+            if (range.intersectsNode(n)) textNodes.push(n as Text);
+            n = walker.nextNode();
+          }
+        }
+        const rects: DOMRect[] = [];
+        for (const tn of textNodes) {
+          const start = tn === range.startContainer ? range.startOffset : 0;
+          const end = tn === range.endContainer ? range.endOffset : tn.length;
+          if (end <= start) continue;
+          const rr = document.createRange();
+          rr.setStart(tn, start);
+          rr.setEnd(tn, end);
+          for (const r of Array.from(rr.getClientRects())) {
+            if (r.width > 1 && r.height > 1) rects.push(r);
+          }
+        }
+        if (rects.length === 0) { clear(); return; }
+
+        // junta os pedaços da mesma linha em um retângulo só
+        const lines: Array<{ l: number; t: number; r: number; b: number }> = [];
+        for (const r of rects) {
+          const line = lines.find((x) => Math.min(x.b, r.bottom) - Math.max(x.t, r.top) > Math.min(x.b - x.t, r.height) * 0.5);
+          if (line) {
+            line.l = Math.min(line.l, r.left);
+            line.r = Math.max(line.r, r.right);
+            line.t = Math.min(line.t, r.top);
+            line.b = Math.max(line.b, r.bottom);
+          } else {
+            lines.push({ l: r.left, t: r.top, r: r.right, b: r.bottom });
+          }
+        }
+        const hr = host.getBoundingClientRect();
+        const next = lines.map((x) => ({
+          l: Math.round(x.l - hr.left),
+          t: Math.round(x.t - hr.top),
+          w: Math.round(x.r - x.l),
+          h: Math.round(x.b - x.t),
+        }));
+        const key = JSON.stringify(next);
+        if (key !== selRectsKeyRef.current) {
+          selRectsKeyRef.current = key;
+          setSelRects(next);
+        }
+      } catch {
+        clear();
+      }
+    };
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(compute);
+    };
+    document.addEventListener("selectionchange", schedule);
+    window.addEventListener("resize", schedule);
+    schedule();
+    return () => {
+      document.removeEventListener("selectionchange", schedule);
+      window.removeEventListener("resize", schedule);
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [open, readOnly, blocks, editorFontSize, showFormatBar]);
+
   const activateFieldForEditing = useCallback((target: "title" | "content", blockIndex = 0) => {
     focusEditorField(target, blockIndex);
     if (readOnly && editingNote) enterEditMode();
@@ -3076,7 +3167,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Editor de Nota</DialogTitle>
-        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } .rich-text-editable::selection, .rich-text-editable ::selection { background-color: ${selectionBg}; } [data-note-dark="true"] .rich-text-editable [style*="26, 26, 46"], [data-note-dark="true"] .rich-text-editable [style*="#1a1a2e" i], [data-note-dark="true"] .note-rich-view [style*="26, 26, 46"], [data-note-dark="true"] .note-rich-view [style*="#1a1a2e" i] { color: ${textColor} !important; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
+        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } .rich-text-editable::selection, .rich-text-editable ::selection { background-color: transparent; } [data-note-dark="true"] .rich-text-editable [style*="26, 26, 46"], [data-note-dark="true"] .rich-text-editable [style*="#1a1a2e" i], [data-note-dark="true"] .note-rich-view [style*="26, 26, 46"], [data-note-dark="true"] .note-rich-view [style*="#1a1a2e" i] { color: ${textColor} !important; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
         {/* ── NOTEPAD CONTAINER ── */}
         <div
           className="flex flex-col"
@@ -3376,7 +3467,24 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               overscrollBehavior: "contain",
             }}
           >
-            <div className="py-2">
+            <div className="py-2" ref={selHostRef} style={{ position: "relative" }}>
+              {!readOnly && selRects.map((r, i) => (
+                <div
+                  key={i}
+                  aria-hidden
+                  style={{
+                    position: "absolute",
+                    left: r.l - 2,
+                    top: r.t - 1,
+                    width: r.w + 4,
+                    height: r.h + 2,
+                    border: `2px solid ${selectionOutline}`,
+                    borderRadius: 6,
+                    pointerEvents: "none",
+                    zIndex: 1,
+                  }}
+                />
+              ))}
               {blocks.map((block, idx) => {
                 if (block.type === "text") {
                   if (readOnly) {
