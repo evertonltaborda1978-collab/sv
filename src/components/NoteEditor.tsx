@@ -54,6 +54,8 @@ import {
   Keyboard,
   ChevronDown,
   ChevronUp,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import {
   Dialog,
@@ -1320,6 +1322,32 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     setViewZoom(newScale);
     setViewTx(clamped.x);
     setViewTy(clamped.y);
+  };
+
+  // Preencher a tela: dá zoom até a foto cobrir a tela toda (sem faixas nas laterais ou em cima/embaixo),
+  // cortando o que sobrar nas bordas. Tocar de novo volta ao ajuste inteiro.
+  const fillViewerScreen = () => {
+    if (viewZoom > 1.01) {
+      setViewZoom(1);
+      setViewTx(0);
+      setViewTy(0);
+      return;
+    }
+    const c = viewerContainerRef.current?.getBoundingClientRect();
+    const im = viewerImgRef.current;
+    if (!c || !im) return;
+    const rotated90 = viewRotation === 90 || viewRotation === 270;
+    const w0 = im.offsetWidth || baseImgSizeRef.current.w;
+    const h0 = im.offsetHeight || baseImgSizeRef.current.h;
+    if (!w0 || !h0) return;
+    baseImgSizeRef.current = { w: w0, h: h0 };
+    const bw = rotated90 ? h0 : w0;
+    const bh = rotated90 ? w0 : h0;
+    const s = Math.min(VIEW_MAX_ZOOM, Math.max(c.width / bw, c.height / bh));
+    if (s <= 1.01) return;
+    setViewZoom(s);
+    setViewTx(0);
+    setViewTy(0);
   };
 
   const goToImage = (images: string[], newIndex: number) => {
@@ -3458,13 +3486,28 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const canUndo = historyIdx > 0;
   const canRedo = historyIdx < history.length - 1;
 
+  // Botões do visualizador de foto: sempre com fundo escuro, para a letra/ícone branco
+  // aparecer bem mesmo por cima de uma foto clara.
+  const viewerPillBg = "rgba(0,0,0,0.72)";
+  const viewerIconBtn: React.CSSProperties = {
+    color: "#FFF",
+    background: viewerPillBg,
+    border: "none",
+    width: viewerLandscape ? 34 : 40,
+    height: viewerLandscape ? 34 : 40,
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.45)",
+  };
   const viewerZoomControls = (
     <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "center" }} onClick={(e) => e.stopPropagation()}>
-      <button onClick={() => zoomBy(-0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
+      <button onClick={() => zoomBy(-0.5)} style={{ padding: 8, borderRadius: 8, background: viewerPillBg, color: "#FFF", border: "none", boxShadow: "0 1px 4px rgba(0,0,0,0.45)" }}>
         <ZoomOut size={18} />
       </button>
-      <span style={{ color: "#FFF", fontSize: 13, minWidth: 44, textAlign: "center" }}>{Math.round(viewZoom * 100)}%</span>
-      <button onClick={() => zoomBy(0.5)} style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none" }}>
+      <span style={{ color: "#FFF", fontSize: 13, minWidth: 52, textAlign: "center", background: viewerPillBg, borderRadius: 999, padding: "6px 10px", boxShadow: "0 1px 4px rgba(0,0,0,0.45)" }}>{Math.round(viewZoom * 100)}%</span>
+      <button onClick={() => zoomBy(0.5)} style={{ padding: 8, borderRadius: 8, background: viewerPillBg, color: "#FFF", border: "none", boxShadow: "0 1px 4px rgba(0,0,0,0.45)" }}>
         <ZoomIn size={18} />
       </button>
     </div>
@@ -4991,8 +5034,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 paddingBottom: "calc(4px + env(safe-area-inset-bottom))",
               }}
             >
-              {/* Esquerda: leitura limpa e áudio */}
-              <div className="flex items-center gap-2">
+              {/* Linha de cima: Leitura Limpa à esquerda, lixeira no meio, Ouvir à direita */}
+              <div style={{ width: "100%", display: "grid", gridTemplateColumns: "1fr auto 1fr", alignItems: "center", gap: 8 }}>
+                <div style={{ justifySelf: "start" }}>
                 <button
                   onClick={() => setReadingMode(true)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[12px] font-semibold whitespace-nowrap transition-all active:scale-95"
@@ -5001,6 +5045,21 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 >
                   📖 Leitura Limpa
                 </button>
+                </div>
+                <div style={{ justifySelf: "center" }}>
+                  {editingNote && onDelete && (
+                    <button
+                      onClick={() => setShowDeleteConfirm(true)}
+                      className="flex items-center justify-center rounded-full transition-all active:scale-95"
+                      style={{ width: 36, height: 36, background: "transparent", border: `1px solid ${isDark ? "#E57373" : "#E53935"}`, color: isDark ? "#E57373" : "#E53935" }}
+                      title="Excluir nota"
+                      aria-label="Excluir nota"
+                    >
+                      <Trash2 size={17} />
+                    </button>
+                  )}
+                </div>
+                <div style={{ justifySelf: "end" }}>
                 <button
                   onClick={toggleReadAloud}
                   aria-pressed={isSpeaking}
@@ -5014,6 +5073,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 >
                   {isSpeaking ? "⏹️ Parar" : "🔊 Ouvir"}
                 </button>
+                </div>
               </div>
 
               {/* Direita: botões que já existiam */}
@@ -5567,6 +5627,18 @@ ${blocksToPlainText(blocks)}`.trim();
             }}
             onClick={() => setViewingImage(null)}
           >
+            {/* Fundo: a própria foto desfocada e escurecida, no lugar das faixas pretas */}
+            <div
+              aria-hidden="true"
+              style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, overflow: "hidden", pointerEvents: "none", opacity: viewCloseOpacity }}
+            >
+              <img
+                src={viewingImage}
+                alt=""
+                draggable={false}
+                style={{ width: "100%", height: "100%", objectFit: "cover", filter: "blur(28px) brightness(0.55)", transform: "scale(1.15)" }}
+              />
+            </div>
             <div
               ref={viewerContainerRef}
               style={{
@@ -5613,7 +5685,7 @@ ${blocksToPlainText(blocks)}`.trim();
                   {viewIndex > 0 && (
                     <button
                       onClick={(e) => { e.stopPropagation(); goToImage(noteImages, viewIndex - 1); }}
-                      style={{ position: "absolute", top: "50%", left: 10, transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "rgba(0,0,0,0.45)", border: "none", color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center" }}
+                      style={{ position: "absolute", top: "50%", left: 10, transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "rgba(0,0,0,0.7)", border: "none", color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center" }}
                     >
                       <ChevronLeft size={20} />
                     </button>
@@ -5621,7 +5693,7 @@ ${blocksToPlainText(blocks)}`.trim();
                   {viewIndex < noteImages.length - 1 && (
                     <button
                       onClick={(e) => { e.stopPropagation(); goToImage(noteImages, viewIndex + 1); }}
-                      style={{ position: "absolute", top: "50%", right: 10, transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "rgba(0,0,0,0.45)", border: "none", color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center" }}
+                      style={{ position: "absolute", top: "50%", right: 10, transform: "translateY(-50%)", width: 34, height: 34, borderRadius: "50%", background: "rgba(0,0,0,0.7)", border: "none", color: "#FFF", display: "flex", alignItems: "center", justifyContent: "center" }}
                     >
                       <ChevronRight size={20} />
                     </button>
@@ -5649,31 +5721,39 @@ ${blocksToPlainText(blocks)}`.trim();
               }}
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 8, pointerEvents: viewerUiVisible ? "auto" : "none" }} onClick={(e) => e.stopPropagation()}>
-                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>
+                <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14, background: viewerPillBg, borderRadius: 999, padding: "6px 12px", boxShadow: "0 1px 4px rgba(0,0,0,0.45)" }}>
                   🔍 Ver ampliado
                   {noteImages.length > 1 && (
                     <span style={{ color: "rgba(255,255,255,0.7)", fontSize: 12, fontWeight: 400, marginLeft: 8 }}>{viewIndex + 1}/{noteImages.length}</span>
                   )}
                 </span>
                 {viewerLandscape && viewerZoomControls}
-                <div style={{ display: "flex", gap: 4 }}>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); fillViewerScreen(); }}
+                    style={viewerIconBtn}
+                    title={viewZoom > 1.01 ? "Ajustar à tela" : "Preencher a tela"}
+                    aria-label={viewZoom > 1.01 ? "Ajustar à tela" : "Preencher a tela"}
+                  >
+                    {viewZoom > 1.01 ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+                  </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleViewerShareOrDownload(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={viewerIconBtn}
                     title="Baixar / Compartilhar"
                   >
                     <Download size={20} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); handleViewerRotate(); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={viewerIconBtn}
                     title="Girar"
                   >
                     <RotateCw size={20} />
                   </button>
                   <button
                     onClick={(e) => { e.stopPropagation(); setViewingImage(null); }}
-                    style={{ color: "#FFF", background: "none", border: "none", padding: viewerLandscape ? 6 : 10, display: "flex", alignItems: "center", justifyContent: "center" }}
+                    style={viewerIconBtn}
                     title="Fechar"
                   >
                     <X size={22} />
