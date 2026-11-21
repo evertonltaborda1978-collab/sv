@@ -1421,6 +1421,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // fonte, formatação de texto etc.), deixando só uma linha limpa pra digitar.
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Ao fechar o cartão do "•••", fecha também a escolha de cor da nota.
+  useEffect(() => {
+    if (!showMoreMenu) setShowColorPicker(false);
+  }, [showMoreMenu]);
   // Painel de formatação do texto (botão "Aa" na barra de baixo): começa sempre fechado.
   const [showFormatBar, setShowFormatBar] = useState(false);
   useEffect(() => {
@@ -3189,7 +3193,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
           {/* ── HEADER (2 linhas em mobile p/ garantir todos os botões visíveis) ── */}
           <div
             className="shrink-0"
-            style={{ background: theme.headerBg, transition: "background 0.3s ease", paddingTop: !readOnly && editingNote ? 2 : "calc(8px + env(safe-area-inset-top))" }}
+            style={{ position: "relative", zIndex: 30, background: theme.headerBg, transition: "background 0.3s ease", paddingTop: !readOnly && editingNote ? 2 : "calc(8px + env(safe-area-inset-top))" }}
           >
             {/* Linha 1: voltar + título + fechar */}
             <div className="flex items-center gap-1 px-2 pb-1">
@@ -3260,198 +3264,200 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               </button>
             </div>
 
-            {/* Linha 2: ações (cor, cadeado/copiar/compartilhar/editar) — escondida
-                atrás do botão "•••", só aparece quando showMoreMenu é true */}
+            {/* ── Cartão do "•••": abre FLUTUANDO por cima do texto (não empurra a nota para baixo).
+                Tem as mesmas ações de antes (cor, excluir, copiar, modo escuro, compartilhar, editar),
+                o tamanho da letra, alto contraste, ouvir e leitura limpa — agora com nome embaixo de cada botão. ── */}
             {showMoreMenu && (
-            <div className="flex items-center gap-1 px-2 pb-1.5 overflow-x-auto no-scrollbar" style={{ WebkitOverflowScrolling: "touch" }}>
-              {/* Cor da nota — sempre visível em modo edição */}
-              {!readOnly && (
-                <button
-                  onClick={() => setShowColorPicker(!showColorPicker)}
-                  className="rounded-md border-2 border-white/60 shadow-sm shrink-0 transition-transform hover:scale-110 flex items-center justify-center"
-                  style={{ background: NOTE_COLORS.find((c) => c.value === selectedColor)?.dot || "#FEF9C3", width: 36, height: 36 }}
-                  title="Cor da nota"
-                  aria-label="Cor da nota"
+              <>
+                {/* toque fora do cartão fecha (começa logo abaixo do cabeçalho, então os botões do topo continuam funcionando) */}
+                <div
+                  style={{ position: "absolute", top: "100%", left: 0, right: 0, height: "100vh", zIndex: 29 }}
+                  onClick={() => setShowMoreMenu(false)}
                 />
-              )}
-
-              {/* Desfazer removido daqui — agora fica sempre visível na
-                  linha 1 do cabeçalho, sem precisar abrir esse menu. */}
-
-              {/* Excluir — só aparece editando uma nota que já existe (uma
-                  nota nova, ainda não salva, não tem o que excluir) */}
-              {editingNote && onDelete && (
-                <button
-                  onClick={() => setShowDeleteConfirm(true)}
-                  className="p-2 rounded-lg hover:bg-black/10 transition-colors shrink-0 flex items-center justify-center"
-                  title="Excluir nota"
-                  aria-label="Excluir nota"
-                  style={{ color: "#E53935", minWidth: 36, minHeight: 36 }}
-                >
-                  <Trash2 size={18} />
-                </button>
-              )}
-
-              {/* Copiar — sempre visível */}
-              <button
-                onClick={handleCopy}
-                className="p-2 rounded-lg hover:bg-black/10 transition-colors shrink-0 flex items-center justify-center"
-                title="Copiar nota"
-                aria-label="Copiar nota"
-                style={{ color: textColor, minWidth: 36, minHeight: 36 }}
-              >
-                {copied ? <Check size={18} className="text-green-700" /> : <Copy size={18} />}
-              </button>
-
-              {/* Toggle modo escuro */}
-              <button
-                onClick={() => setSelectedColor(selectedColor === "bg-gray-800" ? lastLightColorRef.current : "bg-gray-800")}
-                className="p-2 rounded-full hover:bg-black/10 transition-all shrink-0 flex items-center justify-center"
-                title={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}
-                aria-label={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}
-                style={{
-                  background: selectedColor === "bg-gray-800" ? "rgba(255,255,255,0.15)" : "rgba(0,0,0,0.08)",
-                  width: 34, height: 34, minWidth: 34,
-                  color: textColor,
-                }}
-              >
-                {selectedColor === "bg-gray-800" ? (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-                ) : (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-                )}
-              </button>
-
-              {/* Compartilhar — sempre visível */}
-              {editingNote && (
-                <button
-                  onClick={() => setShowShareModal(true)}
-                  className="p-2 rounded-lg hover:bg-black/10 transition-all shrink-0 flex items-center justify-center"
-                  title="Compartilhar nota"
-                  aria-label="Compartilhar nota"
-                  style={{ color: textColor, minWidth: 36, minHeight: 36 }}
-                >
-                  <Share2 size={18} />
-                </button>
-              )}
-
-              {/* Editar — em modo visualização */}
-              {readOnly && editingNote && (
-                <button
-                  onClick={enterEditMode}
-                  className="px-3 py-2 rounded-lg hover:bg-black/10 transition-all shrink-0 flex items-center gap-1 font-semibold"
-                  title="Editar nota"
-                  aria-label="Editar nota"
-                  style={{ color: textColor, fontSize: 13 }}
-                >
-                  <Pencil size={16} /> Editar
-                </button>
-              )}
-            </div>
-            )}
-          </div>
-
-          {/* Color picker dropdown */}
-          {showColorPicker && (
-            <div
-              className="flex gap-2 flex-wrap px-3 py-3 shrink-0"
-              style={{ background: theme.headerBg, transition: "background 0.3s ease", WebkitOverflowScrolling: "touch" }}
-            >
-              {NOTE_COLORS.map((c) => (
-                <button
-                  key={c.value}
-                  onClick={() => { setSelectedColor(c.value); setShowColorPicker(false); }}
-                  className={cn(
-                    "rounded-full border-2 transition-all duration-200 shrink-0",
-                    selectedColor === c.value
-                      ? "border-gray-800 scale-110 shadow-md"
-                      : "border-white/60 hover:scale-105"
-                  )}
-                  style={{ background: c.dot, width: 44, height: 44, minWidth: 44, minHeight: 44 }}
-                  title={c.label}
-                  aria-label={c.label}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* ── Sub-header — escondido atrás do "•••" ── */}
-          {showMoreMenu && (
-          <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-1.5 text-[13px] shrink-0" style={{ color: theme.textMuted, transition: "color 0.3s ease" }}>
-            <span className="font-medium">
-              {readOnly ? "👁️ Visualização" : (editingNote ? "✏️ Editando" : "Nova nota")}
-              {isListening && (
-                <span className="ml-2 text-red-500 font-semibold animate-pulse">
-                  🎤 {activeFieldRef.current === "title" ? "Ditando no título" : "Ditando no conteúdo"}
-                </span>
-              )}
-            </span>
-            <div className="flex items-center gap-1 flex-wrap">
-              {[14, 16, 20, 24, 30].map((size, i) => (
-                <button
-                  key={size}
-                  onClick={() => changeEditorFontSize(size)}
+                <div
+                  onMouseDown={(e) => e.preventDefault()}
                   style={{
-                    width: 24, height: 24,
-                    borderRadius: 6,
-                    background: editorFontSize === size ? theme.borderAccent : "transparent",
-                    border: `0.5px solid ${editorFontSize === size ? theme.borderAccent : theme.lines}`,
-                    fontSize: 8 + i * 2,
-                    fontWeight: 700,
-                    color: editorFontSize === size ? isDark ? "#1A1A2E" : "#fff" : theme.textMuted,
-                    cursor: "pointer",
-                    lineHeight: 1,
-                    display: "flex", alignItems: "center", justifyContent: "center",
+                    position: "absolute", top: "100%", left: 8, right: 8, zIndex: 31, marginTop: 2,
+                    background: theme.headerBg, border: `1px solid ${theme.lines}`, borderRadius: 16,
+                    boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: "8px 10px 10px",
+                    maxHeight: "calc(100dvh - 120px)", overflowY: "auto", color: textColor,
                   }}
                 >
-                  A
-                </button>
-              ))}
+                  {/* Estado: visualização / editando / ditando */}
+                  <div style={{ fontSize: 12, fontWeight: 600, color: theme.textMuted, padding: "0 4px 6px" }}>
+                    {readOnly ? "👁️ Visualização" : (editingNote ? "✏️ Editando" : "Nova nota")}
+                    {isListening && (
+                      <span className="ml-2 text-red-500 font-semibold animate-pulse">
+                        🎤 {activeFieldRef.current === "title" ? "Ditando no título" : "Ditando no conteúdo"}
+                      </span>
+                    )}
+                  </div>
 
-              <button
-                onClick={toggleHighContrast}
-                title="Alto contraste"
-                style={{
-                  width: 24, height: 24, borderRadius: 6, marginLeft: 4, flexShrink: 0,
-                  background: highContrast ? theme.borderAccent : "transparent",
-                  border: `0.5px solid ${theme.lines}`,
-                  color: highContrast ? (isDark ? "#1A1A2E" : "#fff") : theme.textMuted,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                <Contrast size={13} />
-              </button>
+                  {/* Ações */}
+                  <div className="flex flex-wrap gap-1">
+                    {!readOnly && (
+                      <button
+                        onClick={() => setShowColorPicker(!showColorPicker)}
+                        className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                        style={{ width: 64, minHeight: 58, color: textColor, background: showColorPicker ? "rgba(0,0,0,0.08)" : "transparent" }}
+                        title="Cor da nota"
+                        aria-label="Cor da nota"
+                      >
+                        <span style={{ width: 24, height: 24, borderRadius: 8, border: "2px solid rgba(255,255,255,0.7)", boxShadow: "0 0 0 1px rgba(0,0,0,0.25)", background: NOTE_COLORS.find((c) => c.value === selectedColor)?.dot || "#FEF9C3" }} />
+                        <span style={{ fontSize: 11 }}>Cor</span>
+                      </button>
+                    )}
 
-              <button
-                onClick={toggleReadAloud}
-                title="Ouvir a nota em voz alta"
-                style={{
-                  width: 24, height: 24, borderRadius: 6, flexShrink: 0,
-                  background: isSpeaking ? theme.borderAccent : "transparent",
-                  border: `0.5px solid ${theme.lines}`,
-                  color: isSpeaking ? (isDark ? "#1A1A2E" : "#fff") : theme.textMuted,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                {isSpeaking ? <VolumeX size={13} /> : <Volume2 size={13} />}
-              </button>
+                    {editingNote && onDelete && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); setShowDeleteConfirm(true); }}
+                        className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                        style={{ width: 64, minHeight: 58, color: "#E53935" }}
+                        title="Excluir nota"
+                        aria-label="Excluir nota"
+                      >
+                        <Trash2 size={22} />
+                        <span style={{ fontSize: 11 }}>Excluir</span>
+                      </button>
+                    )}
 
-              <button
-                onClick={() => setReadingMode(true)}
-                title="Modo de leitura simplificado"
-                style={{
-                  width: 24, height: 24, borderRadius: 6, flexShrink: 0,
-                  background: "transparent",
-                  border: `0.5px solid ${theme.lines}`,
-                  color: theme.textMuted,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                }}
-              >
-                <BookOpen size={13} />
-              </button>
-            </div>
+                    <button
+                      onClick={handleCopy}
+                      className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                      style={{ width: 64, minHeight: 58, color: textColor }}
+                      title="Copiar nota"
+                      aria-label="Copiar nota"
+                    >
+                      {copied ? <Check size={22} className="text-green-700" /> : <Copy size={22} />}
+                      <span style={{ fontSize: 11 }}>{copied ? "Copiada" : "Copiar"}</span>
+                    </button>
+
+                    <button
+                      onClick={() => setSelectedColor(selectedColor === "bg-gray-800" ? lastLightColorRef.current : "bg-gray-800")}
+                      className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                      style={{ width: 64, minHeight: 58, color: textColor }}
+                      title={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}
+                      aria-label={selectedColor === "bg-gray-800" ? "Modo claro" : "Modo escuro"}
+                    >
+                      {selectedColor === "bg-gray-800" ? (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                      ) : (
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                      )}
+                      <span style={{ fontSize: 11 }}>{selectedColor === "bg-gray-800" ? "Claro" : "Escuro"}</span>
+                    </button>
+
+                    {editingNote && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); setShowShareModal(true); }}
+                        className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                        style={{ width: 64, minHeight: 58, color: textColor }}
+                        title="Compartilhar nota"
+                        aria-label="Compartilhar nota"
+                      >
+                        <Share2 size={22} />
+                        <span style={{ fontSize: 10 }}>Compartilhar</span>
+                      </button>
+                    )}
+
+                    {readOnly && editingNote && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); enterEditMode(); }}
+                        className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                        style={{ width: 64, minHeight: 58, color: textColor }}
+                        title="Editar nota"
+                        aria-label="Editar nota"
+                      >
+                        <Pencil size={22} />
+                        <span style={{ fontSize: 11 }}>Editar</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Cores da nota (abre ao tocar em "Cor") */}
+                  {showColorPicker && (
+                    <div className="flex gap-2 flex-wrap" style={{ padding: "8px 4px 4px" }}>
+                      {NOTE_COLORS.map((c) => (
+                        <button
+                          key={c.value}
+                          onClick={() => { setSelectedColor(c.value); setShowColorPicker(false); }}
+                          className={cn(
+                            "rounded-full border-2 transition-all duration-200 shrink-0",
+                            selectedColor === c.value ? "border-gray-800 scale-110 shadow-md" : "border-white/60 hover:scale-105"
+                          )}
+                          style={{ background: c.dot, width: 40, height: 40, minWidth: 40, minHeight: 40 }}
+                          title={c.label}
+                          aria-label={c.label}
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  <div style={{ height: 1, background: theme.lines, margin: "6px 0" }} />
+
+                  {/* Tamanho da letra */}
+                  <div style={{ fontSize: 11, color: theme.textMuted, padding: "0 4px 4px" }}>Tamanho da letra</div>
+                  <div className="flex items-center gap-2" style={{ padding: "0 4px" }}>
+                    {[14, 16, 20, 24, 30].map((size, i) => (
+                      <button
+                        key={size}
+                        onClick={() => changeEditorFontSize(size)}
+                        style={{
+                          width: 42, height: 42, borderRadius: 10, flexShrink: 0,
+                          background: editorFontSize === size ? theme.borderAccent : "transparent",
+                          border: `1px solid ${editorFontSize === size ? theme.borderAccent : theme.lines}`,
+                          fontSize: 12 + i * 3, fontWeight: 700,
+                          color: editorFontSize === size ? (isDark ? "#1A1A2E" : "#fff") : theme.textMuted,
+                          display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1,
+                        }}
+                        aria-label={`Tamanho da letra ${size}`}
+                      >
+                        A
+                      </button>
+                    ))}
+                  </div>
+
+                  <div style={{ height: 1, background: theme.lines, margin: "8px 0 4px" }} />
+
+                  {/* Contraste, ouvir e leitura limpa */}
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      onClick={toggleHighContrast}
+                      className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                      style={{ width: 64, minHeight: 58, color: textColor, background: highContrast ? "rgba(0,0,0,0.08)" : "transparent" }}
+                      title="Alto contraste"
+                      aria-label="Alto contraste"
+                    >
+                      <Contrast size={22} />
+                      <span style={{ fontSize: 11 }}>Contraste</span>
+                    </button>
+
+                    <button
+                      onClick={() => { toggleReadAloud(); setShowMoreMenu(false); }}
+                      className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                      style={{ width: 64, minHeight: 58, color: textColor, background: isSpeaking ? "rgba(0,0,0,0.08)" : "transparent" }}
+                      title="Ouvir a nota em voz alta"
+                      aria-label="Ouvir a nota em voz alta"
+                    >
+                      {isSpeaking ? <VolumeX size={22} /> : <Volume2 size={22} />}
+                      <span style={{ fontSize: 11 }}>{isSpeaking ? "Parar" : "Ouvir"}</span>
+                    </button>
+
+                    <button
+                      onClick={() => { setShowMoreMenu(false); setReadingMode(true); }}
+                      className="flex flex-col items-center justify-center gap-1 rounded-xl hover:bg-black/10 transition-colors"
+                      style={{ width: 64, minHeight: 58, color: textColor }}
+                      title="Modo de leitura simplificado"
+                      aria-label="Modo de leitura simplificado"
+                    >
+                      <BookOpen size={22} />
+                      <span style={{ fontSize: 11 }}>Leitura</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
-          )}
 
           {/* ── LINED PAPER BODY ── */}
           <div
