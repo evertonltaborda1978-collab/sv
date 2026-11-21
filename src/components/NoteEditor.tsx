@@ -2488,6 +2488,33 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     toast({ title: "📷 Imagem adicionada", description: "Imagem comprimida e inserida na nota." });
   };
 
+  // Várias fotos de uma vez: comprime todas e insere juntas, na ordem em que foram escolhidas,
+  // logo depois do cursor (inserir uma por uma deixava a ordem invertida).
+  const insertImagesAtBlock = async (files: File[]) => {
+    const urls: string[] = [];
+    for (const f of files) {
+      try {
+        urls.push(await compressImage(f));
+      } catch {
+        // foto que não pôde ser lida é pulada; as outras continuam
+      }
+    }
+    if (urls.length === 0) return;
+    const idx = focusedBlockRef.current;
+    setBlocks((prev) => {
+      const next = [...prev];
+      const novos: ContentBlock[] = [];
+      for (const url of urls) novos.push({ type: "image", url }, { type: "text", content: "" });
+      next.splice(idx + 1, 0, ...novos);
+      pushHistory(next);
+      return next;
+    });
+    toast({
+      title: urls.length === 1 ? "📷 Imagem adicionada" : `📷 ${urls.length} imagens adicionadas`,
+      description: urls.length === 1 ? "Imagem comprimida e inserida na nota." : "Imagens comprimidas e inseridas na nota, na ordem escolhida.",
+    });
+  };
+
   const removeImageBlock = (index: number) => {
     setBlocks((prev) => {
       const next = prev.filter((_, i) => i !== index);
@@ -2506,13 +2533,35 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     });
   };
 
+  // Galeria no app do celular: abre o seletor do Android deixando marcar várias fotos de uma vez.
+  // Se o seletor de várias fotos falhar por algum motivo, volta ao seletor de uma foto (como era antes).
+  const pickManyFromGallery = async (): Promise<File[]> => {
+    try {
+      const { Camera } = await import("@capacitor/camera");
+      const res = await Camera.pickImages({ quality: 85 });
+      const files: File[] = [];
+      for (let i = 0; i < res.photos.length; i++) {
+        const ph = res.photos[i];
+        if (!ph.webPath) continue;
+        const resp = await fetch(ph.webPath);
+        const blob = await resp.blob();
+        const ext = (ph.format || "jpeg").replace("jpg", "jpeg");
+        files.push(new File([blob], `foto_${Date.now()}_${i}.${ext === "jpeg" ? "jpg" : ext}`, { type: blob.type || `image/${ext}` }));
+      }
+      return files;
+    } catch (err) {
+      const msg = String((err as any)?.message || err || "");
+      if (/cancel/i.test(msg)) return []; // você fechou a galeria sem escolher
+      const one = await takeNativePhoto("gallery");
+      return one ? [one] : [];
+    }
+  };
+
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    // Support multiple images
-    for (let i = 0; i < files.length; i++) {
-      await insertImageAtBlock(files[i]);
-    }
+    // Várias imagens de uma vez, na ordem escolhida
+    await insertImagesAtBlock(Array.from(files));
     e.target.value = "";
   };
 
@@ -4555,7 +4604,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                     >
                       {[
                         { icon: <Camera size={18} />, label: "Câmera", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("camera"); if (f) await insertImageAtBlock(f); } else { cameraInputRef.current?.click(); } } },
-                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("gallery"); if (f) await insertImageAtBlock(f); } else { fileInputRef.current?.click(); } } },
+                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const files = await pickManyFromGallery(); await insertImagesAtBlock(files); } else { fileInputRef.current?.click(); } } },
                         { icon: ocrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanSearch size={18} />, label: "OCR", action: () => { setShowOcrModal(true); setShowFab(false); } },
                         { icon: qrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanLine size={18} />, label: "QR", action: () => { handleStartQrScanner(); setShowFab(false); } },
                         { icon: <ListChecks size={18} />, label: "Lista", action: () => { addChecklist(); setShowFab(false); } },
