@@ -42,6 +42,7 @@ import {
   AlignCenter,
   AlignRight,
   Paintbrush,
+  Crop,
   Scissors,
   Contrast,
   Volume2,
@@ -500,7 +501,9 @@ interface NoteEditorProps {
 
 // ── ImageAnnotator: editor de desenho tipo Paint (caneta, seta, linha, ──
 // ── retângulo, círculo, texto, borracha de objeto, cores, zoom/lupa) ──
-type DrawTool = "pen" | "arrow" | "line" | "rect" | "circle" | "text" | "eraser";
+type DrawTool = "pen" | "arrow" | "line" | "rect" | "circle" | "text" | "eraser" | "crop";
+
+type CropRect = { x: number; y: number; w: number; h: number };
 
 type DrawObject =
   | { type: "pen"; points: { x: number; y: number }[]; color: string; width: number }
@@ -590,11 +593,39 @@ function drawObjectOnCanvas(ctx: CanvasRenderingContext2D, obj: DrawObject) {
   }
 }
 
-function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSave: (dataUrl: string) => void; onCancel: () => void }) {
+// Move um desenho junto com o corte (o corte muda a origem da foto)
+function shiftDrawObject(obj: DrawObject, dx: number, dy: number): DrawObject {
+  if (obj.type === "pen") return { ...obj, points: obj.points.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })) };
+  if (obj.type === "text") return { ...obj, x: obj.x + dx, y: obj.y + dy };
+  return { ...obj, x1: obj.x1 + dx, y1: obj.y1 + dy, x2: obj.x2 + dx, y2: obj.y2 + dy };
+}
+
+// Converte uma imagem em texto (data URL) de volta em arquivo
+function dataUrlToFile(dataUrl: string, name: string): File {
+  const parts = dataUrl.split(",");
+  const mime = parts[0].match(/:(.*?);/)?.[1] || "image/jpeg";
+  const bin = atob(parts[1] || "");
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], name, { type: mime });
+}
+
+function ImageAnnotator({
+  imageUrl, onSave, onCancel, initialTool, title, cancelLabel, saveLabel, saveQuality,
+}: {
+  imageUrl: string;
+  onSave: (dataUrl: string) => void;
+  onCancel: () => void;
+  initialTool?: DrawTool;
+  title?: string;
+  cancelLabel?: string;
+  saveLabel?: string;
+  saveQuality?: number;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
+  const imgRef = useRef<CanvasImageSource | null>(null);
   const drawingRef = useRef<{ active: boolean; current: DrawObject | null }>({ active: false, current: null });
-  const [tool, setTool] = useState<DrawTool>("pen");
+  const [tool, setTool] = useState<DrawTool>(initialTool || "pen");
   const [color, setColor] = useState("#E53935");
   const [strokeWidth, setStrokeWidth] = useState(5);
   const [objects, setObjects] = useState<DrawObject[]>([]);
@@ -622,6 +653,96 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
   });
   const [textPrompt, setTextPrompt] = useState<{ x: number; y: number } | null>(null);
   const [textInput, setTextInput] = useState("");
+
+  // ── Corte: escolher a parte da foto que fica ──
+  const [cropRect, setCropRect] = useState<CropRect | null>(null);
+  const [cropHistory, setCropHistory] = useState<Array<{ img: CanvasImageSource; size: { w: number; h: number }; objects: DrawObject[] }>>([]);
+  const [canvasBox, setCanvasBox] = useState({ left: 0, top: 0, w: 0, h: 0 });
+  const cropDragRef = useRef<{ mode: string; startX: number; startY: number; rect: CropRect } | null>(null);
+
+  // mede onde a foto está na tela, para o retângulo de corte ficar exatamente por cima dela
+  useLayoutEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const measure = () => setCanvasBox({ left: c.offsetLeft, top: c.offsetTop, w: c.offsetWidth, h: c.offsetHeight });
+    measure();
+    const t = setTimeout(measure, 220); // depois da animação do zoom
+    window.addEventListener("resize", measure);
+    return () => { clearTimeout(t); window.removeEventListener("resize", measure); };
+  }, [ready, zoom, canvasSize, tool]);
+
+  // ao escolher "Cortar", começa com um retângulo um pouco menor que a foto
+  useEffect(() => {
+    if (tool !== "crop") { setCropRect(null); return; }
+    setCropRect((r) => r ?? { x: canvasSize.w * 0.06, y: canvasSize.h * 0.06, w: canvasSize.w * 0.88, h: canvasSize.h * 0.88 });
+  }, [tool, canvasSize.w, canvasSize.h, ready]);
+
+  function startCropDrag(e: React.PointerEvent, mode: string) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!cropRect) return;
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+    cropDragRef.current = { mode, startX: e.clientX, startY: e.clientY, rect: { ...cropRect } };
+  }
+
+  function moveCropDrag(e: React.PointerEvent) {
+    const d = cropDragRef.current;
+    if (!d || canvasBox.w === 0 || canvasBox.h === 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const W = canvasSize.w, H = canvasSize.h;
+    const dx = (e.clientX - d.startX) * (W / canvasBox.w);
+    const dy = (e.clientY - d.startY) * (H / canvasBox.h);
+    const MIN = Math.max(30, Math.min(W, H) * 0.05);
+    if (d.mode === "move") {
+      const x = Math.min(Math.max(0, d.rect.x + dx), W - d.rect.w);
+      const y = Math.min(Math.max(0, d.rect.y + dy), H - d.rect.h);
+      setCropRect({ x, y, w: d.rect.w, h: d.rect.h });
+      return;
+    }
+    let l = d.rect.x, t = d.rect.y, r = d.rect.x + d.rect.w, b = d.rect.y + d.rect.h;
+    if (d.mode.includes("l")) l = Math.min(Math.max(0, l + dx), r - MIN);
+    if (d.mode.includes("r")) r = Math.max(Math.min(W, r + dx), l + MIN);
+    if (d.mode.includes("t")) t = Math.min(Math.max(0, t + dy), b - MIN);
+    if (d.mode.includes("b")) b = Math.max(Math.min(H, b + dy), t + MIN);
+    setCropRect({ x: l, y: t, w: r - l, h: b - t });
+  }
+
+  function endCropDrag() {
+    cropDragRef.current = null;
+  }
+
+  function applyCrop() {
+    const src = imgRef.current;
+    if (!cropRect || !src) return;
+    const x = Math.max(0, Math.round(cropRect.x));
+    const y = Math.max(0, Math.round(cropRect.y));
+    const w = Math.max(1, Math.min(canvasSize.w - x, Math.round(cropRect.w)));
+    const h = Math.max(1, Math.min(canvasSize.h - y, Math.round(cropRect.h)));
+    // foto inteira: nada para cortar
+    if (x <= 1 && y <= 1 && w >= canvasSize.w - 2 && h >= canvasSize.h - 2) { setTool("pen"); return; }
+    const off = document.createElement("canvas");
+    off.width = w;
+    off.height = h;
+    const ctx = off.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(src, x, y, w, h, 0, 0, w, h);
+    setCropHistory((hst) => [...hst, { img: src, size: { ...canvasSize }, objects }]);
+    imgRef.current = off;
+    setObjects((prev) => prev.map((o) => shiftDrawObject(o, -x, -y)));
+    setCanvasSize({ w, h });
+    setZoom(1);
+    setTool("pen");
+  }
+
+  function undoCrop() {
+    const last = cropHistory[cropHistory.length - 1];
+    if (!last) return;
+    imgRef.current = last.img;
+    setCanvasSize(last.size);
+    setObjects(last.objects);
+    setCropHistory((hst) => hst.slice(0, -1));
+  }
 
   const [loadError, setLoadError] = useState(false);
 
@@ -685,6 +806,7 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
 
   function handlePointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     e.preventDefault();
+    if (tool === "crop") return; // no modo corte, quem mexe são as alças do retângulo
     const p = getPoint(e);
 
     if (tool === "text") { setTextPrompt(p); return; }
@@ -822,7 +944,7 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
     const canvas = canvasRef.current;
     if (!canvas) return;
     try {
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
+      const dataUrl = canvas.toDataURL("image/jpeg", saveQuality ?? 0.88);
       onSave(dataUrl);
     } catch (err) {
       setSaveError(true);
@@ -830,6 +952,7 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
   }
 
   const TOOLS: { id: DrawTool; icon: JSX.Element; label: string }[] = [
+    { id: "crop", icon: <Crop size={18} />, label: "Cortar" },
     { id: "pen", icon: <Paintbrush size={18} />, label: "Caneta" },
     { id: "arrow", icon: <ArrowUpRight size={18} />, label: "Seta" },
     { id: "line", icon: <Minus size={18} />, label: "Linha" },
@@ -843,9 +966,9 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
     <div className="absolute inset-0 z-[85] flex flex-col bg-black" style={{ touchAction: "none" }}>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 12px", paddingTop: "calc(12px + env(safe-area-inset-top))", flexShrink: 0 }}>
-        <button onClick={onCancel} style={{ color: "#FFF", fontSize: 14, fontWeight: 600, background: "none", border: "none", padding: "10px 12px", margin: "-10px -4px" }}>Cancelar</button>
-        <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>✏️ Editar imagem</span>
-        <button onClick={handleSave} style={{ color: "#2D9E7F", fontSize: 14, fontWeight: 700, background: "none", border: "none", padding: "10px 12px", margin: "-10px -4px" }}>Salvar</button>
+        <button onClick={onCancel} style={{ color: "#FFF", fontSize: 14, fontWeight: 600, background: "none", border: "none", padding: "10px 12px", margin: "-10px -4px" }}>{cancelLabel || "Cancelar"}</button>
+        <span style={{ color: "#FFF", fontWeight: 700, fontSize: 14 }}>{title || "✏️ Editar imagem"}</span>
+        <button onClick={handleSave} style={{ color: "#2D9E7F", fontSize: 14, fontWeight: 700, background: "none", border: "none", padding: "10px 12px", margin: "-10px -4px" }}>{saveLabel || "Salvar"}</button>
       </div>
 
       {/* Canvas area — rolagem NATIVA de verdade (funciona com a barra de
@@ -873,6 +996,7 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
             <p style={{ fontSize: 12, color: "#AAA" }}>Toque em "Cancelar" e tente novamente.</p>
           </div>
         ) : ready ? (
+          <>
           <canvas
             ref={canvasRef}
             style={{
@@ -886,6 +1010,57 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
               transition: "width 0.15s ease",
             }}
           />
+          {tool === "crop" && cropRect && canvasBox.w > 0 && (
+            <>
+              {/* parte de fora do corte escurecida (não recebe toque) */}
+              <div style={{ position: "absolute", left: canvasBox.left, top: canvasBox.top, width: canvasBox.w, height: canvasBox.h, overflow: "hidden", pointerEvents: "none" }}>
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${(cropRect.x / canvasSize.w) * 100}%`, top: `${(cropRect.y / canvasSize.h) * 100}%`,
+                    width: `${(cropRect.w / canvasSize.w) * 100}%`, height: `${(cropRect.h / canvasSize.h) * 100}%`,
+                    boxShadow: "0 0 0 9999px rgba(0,0,0,0.6)",
+                  }}
+                />
+              </div>
+              {/* retângulo que se arrasta + 8 alças para esticar */}
+              <div style={{ position: "absolute", left: canvasBox.left, top: canvasBox.top, width: canvasBox.w, height: canvasBox.h, pointerEvents: "none" }}>
+                <div
+                  onPointerDown={(e) => startCropDrag(e, "move")}
+                  onPointerMove={moveCropDrag}
+                  onPointerUp={endCropDrag}
+                  onPointerCancel={endCropDrag}
+                  style={{
+                    position: "absolute",
+                    left: `${(cropRect.x / canvasSize.w) * 100}%`, top: `${(cropRect.y / canvasSize.h) * 100}%`,
+                    width: `${(cropRect.w / canvasSize.w) * 100}%`, height: `${(cropRect.h / canvasSize.h) * 100}%`,
+                    border: "2px solid #FFF", boxSizing: "border-box", pointerEvents: "auto", touchAction: "none", cursor: "move",
+                  }}
+                >
+                  {[
+                    { m: "tl", l: "0%", t: "0%" }, { m: "t", l: "50%", t: "0%" }, { m: "tr", l: "100%", t: "0%" },
+                    { m: "l", l: "0%", t: "50%" }, { m: "r", l: "100%", t: "50%" },
+                    { m: "bl", l: "0%", t: "100%" }, { m: "b", l: "50%", t: "100%" }, { m: "br", l: "100%", t: "100%" },
+                  ].map((hd) => (
+                    <div
+                      key={hd.m}
+                      onPointerDown={(e) => startCropDrag(e, hd.m)}
+                      onPointerMove={moveCropDrag}
+                      onPointerUp={endCropDrag}
+                      onPointerCancel={endCropDrag}
+                      style={{
+                        position: "absolute", left: hd.l, top: hd.t, width: 44, height: 44, marginLeft: -22, marginTop: -22,
+                        display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", pointerEvents: "auto",
+                      }}
+                    >
+                      <div style={{ width: 16, height: 16, borderRadius: 4, background: "#2D9E7F", border: "2px solid #FFF" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+          </>
         ) : (
           <Loader2 size={32} className="animate-spin text-white" />
         )}
@@ -930,6 +1105,27 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
 
       {/* Bottom toolbar */}
       <div style={{ padding: "10px 10px calc(10px + env(safe-area-inset-bottom))", background: "#161616", display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+        {/* Corte: confirmar, foto inteira ou sair do corte */}
+        {tool === "crop" && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ width: "100%", textAlign: "center", color: "rgba(255,255,255,0.7)", fontSize: 11 }}>
+              Arraste os cantos e as bordas para escolher a parte que fica
+            </span>
+            <button onClick={applyCrop} style={{ padding: "8px 16px", borderRadius: 8, background: "#2D9E7F", color: "#FFF", border: "none", fontWeight: 700, fontSize: 13 }}>
+              ✂️ Cortar
+            </button>
+            <button
+              onClick={() => setCropRect({ x: 0, y: 0, w: canvasSize.w, h: canvasSize.h })}
+              style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}
+            >
+              Foto inteira
+            </button>
+            <button onClick={() => setTool("pen")} style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}>
+              Sair do corte
+            </button>
+          </div>
+        )}
+
         {/* Tools — quebra linha em telas estreitas, em vez de esconder cortado */}
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {TOOLS.map((t) => (
@@ -949,6 +1145,11 @@ function ImageAnnotator({ imageUrl, onSave, onCancel }: { imageUrl: string; onSa
           <button onClick={() => setObjects([])} title="Limpar tudo" style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", flexShrink: 0, border: "none", fontSize: 11, fontWeight: 700 }}>
             Limpar
           </button>
+          {cropHistory.length > 0 && (
+            <button onClick={undoCrop} title="Desfazer o último corte" style={{ padding: 8, borderRadius: 8, background: "#2E2E2E", color: "#FFF", flexShrink: 0, border: "none", fontSize: 11, fontWeight: 600 }}>
+              ↩ Corte
+            </button>
+          )}
         </div>
 
         {/* Colors + width — também quebra linha em vez de esconder cor cortada */}
@@ -1022,6 +1223,13 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const [title, setTitle] = useState("");
   const [blocks, setBlocks] = useState<ContentBlock[]>([{ type: "text", content: "" }]);
   const [editingImageIdx, setEditingImageIdx] = useState<number | null>(null);
+  // Corte de fotos: ferramenta com que o editor abre, e o "cortar ao adicionar" (uma foto de cada vez, na fila)
+  const [annotatorStartTool, setAnnotatorStartTool] = useState<DrawTool | null>(null);
+  const [cropOnAdd, setCropOnAdd] = useState<boolean>(() => {
+    try { return localStorage.getItem("nb_crop_on_add") !== "0"; } catch { return true; }
+  });
+  const [addCrop, setAddCrop] = useState<{ dataUrl: string; index: number; total: number } | null>(null);
+  const addCropQueueRef = useRef<{ files: File[]; i: number; results: File[] } | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<{ type: "table" | "checklist"; blockIdx: number; itemId: string; label: string } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [pendingDeleteImageIdx, setPendingDeleteImageIdx] = useState<number | null>(null);
@@ -1421,6 +1629,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   // fonte, formatação de texto etc.), deixando só uma linha limpa pra digitar.
   const [showMoreMenu, setShowMoreMenu] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // Fechou a nota no meio do "cortar ao adicionar": descarta a fila
+  useEffect(() => {
+    if (!open) { addCropQueueRef.current = null; setAddCrop(null); }
+  }, [open]);
   // Painel de formatação do texto (botão "Aa" na barra de baixo): começa sempre fechado.
   const [showFormatBar, setShowFormatBar] = useState(false);
   useEffect(() => {
@@ -2515,6 +2727,52 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     });
   };
 
+  // ── Cortar ao adicionar: cada foto escolhida abre o editor no modo corte ANTES de ser comprimida,
+  //    assim a parte que você mantém aproveita a melhor qualidade. Todas entram juntas no fim, na ordem.
+  const toggleCropOnAdd = () => {
+    setCropOnAdd((v) => {
+      const n = !v;
+      try { localStorage.setItem("nb_crop_on_add", n ? "1" : "0"); } catch {}
+      return n;
+    });
+  };
+
+  const finishAddCropQueue = async () => {
+    const q = addCropQueueRef.current;
+    addCropQueueRef.current = null;
+    setAddCrop(null);
+    if (q && q.results.length > 0) await insertImagesAtBlock(q.results);
+  };
+
+  const openAddCropAt = async (i: number) => {
+    const q = addCropQueueRef.current;
+    if (!q) return;
+    try {
+      const big = await compressImage(q.files[i], 2400, 0.92);
+      setAddCrop({ dataUrl: big, index: i + 1, total: q.files.length });
+    } catch {
+      // não conseguiu preparar essa foto para cortar: entra inteira
+      q.results.push(q.files[i]);
+      await advanceAddCrop();
+    }
+  };
+
+  const advanceAddCrop = async () => {
+    const q = addCropQueueRef.current;
+    if (!q) return;
+    q.i += 1;
+    setAddCrop(null); // fecha a foto anterior enquanto prepara a próxima (evita toque duplo)
+    if (q.i < q.files.length) await openAddCropAt(q.i);
+    else await finishAddCropQueue();
+  };
+
+  const addPhotos = async (files: File[]) => {
+    if (files.length === 0) return;
+    if (!cropOnAdd) { await insertImagesAtBlock(files); return; }
+    addCropQueueRef.current = { files, i: 0, results: [] };
+    await openAddCropAt(0);
+  };
+
   const removeImageBlock = (index: number) => {
     setBlocks((prev) => {
       const next = prev.filter((_, i) => i !== index);
@@ -2561,8 +2819,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     const files = e.target.files;
     if (!files || files.length === 0) return;
     // Várias imagens de uma vez, na ordem escolhida
-    await insertImagesAtBlock(Array.from(files));
+    const lista = Array.from(files);
     e.target.value = "";
+    await addPhotos(lista);
   };
 
   // ── Checklist operations ─────────────────────────────
@@ -4339,7 +4598,18 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                           </button>
                           {!readOnly && (
                             <button
-                              onClick={() => setEditingImageIdx(idx)}
+                              onClick={() => { setAnnotatorStartTool("crop"); setEditingImageIdx(idx); }}
+                              className="rounded-full text-white transition-all hover:bg-black/80 active:scale-95"
+                              style={{ background: "rgba(0,0,0,0.7)", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.3)" }}
+                              aria-label="Cortar a foto"
+                              title="Cortar a foto"
+                            >
+                              <Crop size={14} />
+                            </button>
+                          )}
+                          {!readOnly && (
+                            <button
+                              onClick={() => { setAnnotatorStartTool(null); setEditingImageIdx(idx); }}
                               className="rounded-full text-white transition-all hover:bg-black/80 active:scale-95"
                               style={{ background: "rgba(0,0,0,0.7)", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.2)" }}
                               aria-label="Desenhar na imagem"
@@ -4603,8 +4873,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                       style={{ bottom: 50, left: 0, minWidth: 180 }}
                     >
                       {[
-                        { icon: <Camera size={18} />, label: "Câmera", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("camera"); if (f) await insertImageAtBlock(f); } else { cameraInputRef.current?.click(); } } },
-                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const files = await pickManyFromGallery(); await insertImagesAtBlock(files); } else { fileInputRef.current?.click(); } } },
+                        { icon: <Camera size={18} />, label: "Câmera", action: async () => { setShowFab(false); if (isNative()) { const f = await takeNativePhoto("camera"); if (f) await addPhotos([f]); } else { cameraInputRef.current?.click(); } } },
+                        { icon: <ImagePlus size={18} />, label: "Galeria", action: async () => { setShowFab(false); if (isNative()) { const files = await pickManyFromGallery(); await addPhotos(files); } else { fileInputRef.current?.click(); } } },
+                        { icon: <Crop size={18} />, label: cropOnAdd ? "Cortar ao adicionar: sim" : "Cortar ao adicionar: não", action: () => { toggleCropOnAdd(); } },
                         { icon: ocrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanSearch size={18} />, label: "OCR", action: () => { setShowOcrModal(true); setShowFab(false); } },
                         { icon: qrLoading ? <Loader2 size={18} className="animate-spin" /> : <ScanLine size={18} />, label: "QR", action: () => { handleStartQrScanner(); setShowFab(false); } },
                         { icon: <ListChecks size={18} />, label: "Lista", action: () => { addChecklist(); setShowFab(false); } },
@@ -5088,8 +5359,36 @@ ${blocksToPlainText(blocks)}`.trim();
           <AnnotatorErrorBoundary onCancel={() => setEditingImageIdx(null)}>
             <ImageAnnotator
               imageUrl={blocks[editingImageIdx].url!}
-              onSave={(newUrl) => { updateImageBlock(editingImageIdx, newUrl); setEditingImageIdx(null); }}
-              onCancel={() => setEditingImageIdx(null)}
+              initialTool={annotatorStartTool || undefined}
+              onSave={(newUrl) => { updateImageBlock(editingImageIdx, newUrl); setEditingImageIdx(null); setAnnotatorStartTool(null); }}
+              onCancel={() => { setEditingImageIdx(null); setAnnotatorStartTool(null); }}
+            />
+          </AnnotatorErrorBoundary>
+        )}
+
+        {/* Cortar ao adicionar: abre cada foto escolhida no modo corte, antes de entrar na nota */}
+        {addCrop && (
+          <AnnotatorErrorBoundary onCancel={() => { const q = addCropQueueRef.current; if (q) { q.results.push(q.files[q.i]); void advanceAddCrop(); } else setAddCrop(null); }}>
+            <ImageAnnotator
+              key={addCrop.index}
+              imageUrl={addCrop.dataUrl}
+              initialTool="crop"
+              title={addCrop.total > 1 ? `✂️ Foto ${addCrop.index} de ${addCrop.total}` : "✂️ Cortar foto"}
+              cancelLabel="Sem cortar"
+              saveLabel="Adicionar"
+              saveQuality={0.95}
+              onSave={(newUrl) => {
+                const q = addCropQueueRef.current;
+                if (!q) { setAddCrop(null); return; }
+                q.results.push(dataUrlToFile(newUrl, `foto_${Date.now()}_${q.i}.jpg`));
+                void advanceAddCrop();
+              }}
+              onCancel={() => {
+                const q = addCropQueueRef.current;
+                if (!q) { setAddCrop(null); return; }
+                q.results.push(q.files[q.i]);
+                void advanceAddCrop();
+              }}
             />
           </AnnotatorErrorBoundary>
         )}
