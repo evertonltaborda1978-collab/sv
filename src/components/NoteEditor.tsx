@@ -114,6 +114,23 @@ export interface ContentBlock {
 // Cores disponíveis pra formatação de texto
 export const TEXT_COLORS = ["#1A1A2E", "#E53935", "#2D9E7F", "#1E88E5", "#F9A825", "#8E24AA", "#546E7A"];
 
+// No modo noturno, as cores escuras do texto (vermelho, verde, azul, roxo, cinza) ficam apagadas
+// no fundo escuro. Aqui cada uma ganha uma versão mais clara, só na exibição: a cor salva na nota
+// não muda (volta ao normal no modo claro). O amarelo já é claro e fica como está.
+// [como o navegador guarda a cor em rgb(...), em hex, versão clara]
+const DARK_TEXT_COLOR_FIXES: Array<[string, string, string]> = [
+  ["229, 57, 53", "#e53935", "#FF8A80"],
+  ["45, 158, 127", "#2d9e7f", "#5FD3B3"],
+  ["30, 136, 229", "#1e88e5", "#64B5F6"],
+  ["142, 36, 170", "#8e24aa", "#CE93D8"],
+  ["84, 110, 122", "#546e7a", "#B0BEC5"],
+];
+const DARK_TEXT_COLOR_CSS = DARK_TEXT_COLOR_FIXES.map(([rgb, hex, light]) =>
+  [".rich-text-editable", ".note-rich-view"]
+    .map((c) => `[data-note-dark="true"] ${c} [style*="${rgb}"], [data-note-dark="true"] ${c} [style*="${hex}" i]`)
+    .join(", ") + ` { color: ${light} !important; }`
+).join(" ");
+
 // Famílias de fonte disponíveis (usando fontes seguras, sem precisar carregar nada extra)
 export const FONT_OPTIONS: Record<string, { label: string; family: string }> = {
   default: { label: "Padrão", family: "inherit" },
@@ -3524,7 +3541,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
         onInteractOutside={(e) => e.preventDefault()}
       >
         <DialogTitle className="sr-only">Editor de Nota</DialogTitle>
-        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } .rich-text-editable::selection, .rich-text-editable ::selection { background-color: transparent; } [data-note-dark="true"] .rich-text-editable [style*="26, 26, 46"], [data-note-dark="true"] .rich-text-editable [style*="#1a1a2e" i], [data-note-dark="true"] .note-rich-view [style*="26, 26, 46"], [data-note-dark="true"] .note-rich-view [style*="#1a1a2e" i] { color: ${textColor} !important; } @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
+        <style>{`.rich-text-editable[data-empty="true"]:before { content: attr(data-placeholder); color: ${placeholderColor}; pointer-events: none; } .rich-text-editable::selection, .rich-text-editable ::selection { background-color: transparent; } [data-note-dark="true"] .rich-text-editable [style*="26, 26, 46"], [data-note-dark="true"] .rich-text-editable [style*="#1a1a2e" i], [data-note-dark="true"] .note-rich-view [style*="26, 26, 46"], [data-note-dark="true"] .note-rich-view [style*="#1a1a2e" i] { color: ${textColor} !important; } ${DARK_TEXT_COLOR_CSS} @keyframes nbCaret{0%,49%{opacity:1}50%,100%{opacity:0}}`}</style>
         {/* ── NOTEPAD CONTAINER ── */}
         <div
           className="flex flex-col"
