@@ -2469,7 +2469,29 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   };
 
   // Atualiza a imagem de um bloco (usado depois de editar/desenhar em cima dela)
-  const updateImageBlock = (index: number, newUrl: string) => {
+  // Depois de cortar ou desenhar numa foto de uma nota que já existe, a nota é gravada na hora.
+  // Antes a foto nova ficava só como "alteração não salva": se a edição fosse descartada ou
+  // um rascunho antigo fosse recuperado, a foto voltava como era, sem o corte.
+  const persistImageEdit = (index: number, newUrl: string): boolean => {
+    if (!editingNote) return false;
+    if (blocks[index]?.type !== "image") return false;
+    try {
+      const nextBlocks = blocks.map((b, i) => (i === index ? { ...b, url: newUrl } : b));
+      const serialized = serializeBlocks(nextBlocks);
+      const imageUrls: string[] = [];
+      onSave(title, serialized, imageUrls, selectedColor, "default", "medium", editingNote.status === "rascunho" ? "rascunho" : "publicada");
+      markSaved(serialized);
+      clearDraft();
+      if (snapshotRef.current) {
+        snapshotRef.current = { title, blocks: JSON.parse(JSON.stringify(nextBlocks)), color: selectedColor };
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const updateImageBlock = (index: number, newUrl: string, saved = false) => {
     setBlocks((prev) => {
       const next = [...prev];
       if (next[index]?.type !== "image") return prev;
@@ -2477,7 +2499,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
       pushHistory(next);
       return next;
     });
-    toast({ title: "✏️ Imagem editada", description: "As marcações foram salvas na imagem." });
+    toast(
+      saved
+        ? { title: "✏️ Imagem editada e nota salva ✓" }
+        : { title: "✏️ Imagem editada", description: "Toque em Salvar para guardar a nota com a foto nova." },
+    );
   };
 
   // Aplica formatação (cor, fonte, negrito, alinhamento) ao bloco de texto em foco
@@ -4643,7 +4669,6 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                           style={{
                             width: "100%",
                             height: "auto",
-                            maxHeight: "38vh",
                             objectFit: "contain",
                             borderRadius: 12,
                             boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
@@ -5444,7 +5469,7 @@ ${blocksToPlainText(blocks)}`.trim();
             <ImageAnnotator
               imageUrl={blocks[editingImageIdx].url!}
               initialTool={annotatorStartTool || undefined}
-              onSave={(newUrl) => { updateImageBlock(editingImageIdx, newUrl); setEditingImageIdx(null); setAnnotatorStartTool(null); }}
+              onSave={(newUrl) => { const saved = persistImageEdit(editingImageIdx, newUrl); updateImageBlock(editingImageIdx, newUrl, saved); setEditingImageIdx(null); setAnnotatorStartTool(null); }}
               onCancel={() => { setEditingImageIdx(null); setAnnotatorStartTool(null); }}
             />
           </AnnotatorErrorBoundary>
