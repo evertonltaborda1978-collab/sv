@@ -3753,10 +3753,10 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
           {/* ── HEADER (2 linhas em mobile p/ garantir todos os botões visíveis) ── */}
           <div
             className="shrink-0"
-            style={{ background: theme.headerBg, transition: "background 0.3s ease", paddingTop: !readOnly && editingNote ? 2 : "calc(8px + env(safe-area-inset-top))" }}
+            style={{ background: theme.headerBg, transition: "background 0.3s ease", paddingTop: !readOnly && editingNote ? 2 : "calc(4px + env(safe-area-inset-top))" }}
           >
             {/* Linha 1: voltar + título + fechar */}
-            <div className="flex items-center gap-1 px-2 pb-1">
+            <div className="flex items-center gap-1 px-2 pb-0.5">
               {/* Antes havia aqui uma seta "Voltar" que fazia exatamente a
                   mesma coisa que o "X Fechar" à direita — duas setas pra uma
                   única ação. No lugar dela, o Desfazer agora fica sempre à
@@ -3765,19 +3765,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 <button
                   onClick={undo}
                   disabled={!canUndo}
-                  className="p-2 rounded-lg hover:bg-black/10 transition-colors shrink-0 disabled:opacity-30"
+                  className="p-1.5 rounded-lg hover:bg-black/10 transition-colors shrink-0 disabled:opacity-30"
                   title="Desfazer"
                   aria-label="Desfazer"
                 >
-                  <Undo2 size={24} style={{ color: textColor }} />
+                  <Undo2 size={22} style={{ color: textColor }} />
                 </button>
               )}
 
               {readOnly ? (
                 <div
                   onClick={() => { if (editingNote) activateFieldForEditing("title"); }}
-                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-2 text-base font-semibold outline-none shadow-sm cursor-text select-text"
-                  style={{ color: title ? "#1A1A2E" : "#9CA3AF", fontSize: "16px", minHeight: "38px", display: "flex", alignItems: "center", WebkitUserSelect: "text" }}
+                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-1.5 text-base font-semibold outline-none shadow-sm cursor-text select-text"
+                  style={{ color: title ? "#1A1A2E" : "#9CA3AF", fontSize: "16px", minHeight: "34px", display: "flex", alignItems: "center", WebkitUserSelect: "text" }}
                 >
                   {title || "Título da nota..."}
                 </div>
@@ -3799,35 +3799,35 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   onFocus={() => { activeFieldRef.current = "title"; }}
                   onPaste={handleMobilePaste}
                   placeholder="Título da nota..."
-                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-1.5 text-base font-semibold placeholder:text-gray-400 outline-none border-0 shadow-sm"
+                  className="flex-1 min-w-0 bg-white/90 rounded-lg px-3 py-1 text-base font-semibold placeholder:text-gray-400 outline-none border-0 shadow-sm"
                   style={{ color: "#1A1A2E", fontSize: "16px" }}
                 />
               )}
 
               <button
                 onClick={() => setShowMoreMenu((v) => !v)}
-                className="p-2 rounded-lg hover:bg-black/10 transition-colors shrink-0"
+                className="p-1.5 rounded-lg hover:bg-black/10 transition-colors shrink-0"
                 style={{ background: showMoreMenu ? "rgba(0,0,0,0.08)" : "transparent" }}
                 title="Mais opções"
                 aria-label="Mais opções"
               >
-                <MoreHorizontal size={24} style={{ color: textColor }} />
+                <MoreHorizontal size={22} style={{ color: textColor }} />
               </button>
 
               <button
                 onClick={handleClose}
-                className="p-2 rounded-lg hover:bg-black/10 transition-colors shrink-0"
+                className="p-1.5 rounded-lg hover:bg-black/10 transition-colors shrink-0"
                 title="Fechar aplicativo"
                 aria-label="Fechar aplicativo"
               >
-                <X size={26} style={{ color: textColor }} />
+                <X size={24} style={{ color: textColor }} />
               </button>
             </div>
 
             {/* Linha 2: ações (cor, cadeado/copiar/compartilhar/editar) — escondida
                 atrás do botão "•••", só aparece quando showMoreMenu é true */}
             {showMoreMenu && (
-            <div className="flex items-center gap-1 px-2 pb-1.5 overflow-x-auto no-scrollbar" style={{ WebkitOverflowScrolling: "touch" }}>
+            <div className="flex items-center gap-1 px-2 pb-1 overflow-x-auto no-scrollbar" style={{ WebkitOverflowScrolling: "touch" }}>
               {/* Cor da nota — sempre visível em modo edição */}
               {!readOnly && (
                 <button
@@ -3929,7 +3929,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
           {/* Color picker dropdown */}
           {showColorPicker && (
             <div
-              className="flex gap-2 flex-wrap px-3 py-3 shrink-0"
+              className="flex gap-2 px-3 py-1.5 shrink-0 overflow-x-auto no-scrollbar"
               style={{ background: theme.headerBg, transition: "background 0.3s ease", WebkitOverflowScrolling: "touch" }}
             >
               {NOTE_COLORS.map((c) => (
@@ -3942,7 +3942,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                       ? "border-gray-800 scale-110 shadow-md"
                       : "border-white/60 hover:scale-105"
                   )}
-                  style={{ background: c.dot, width: 44, height: 44, minWidth: 44, minHeight: 44 }}
+                  style={{ background: c.dot, width: 36, height: 36, minWidth: 36, minHeight: 36 }}
                   title={c.label}
                   aria-label={c.label}
                 />
@@ -3952,22 +3952,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
 
           {/* ── Sub-header — escondido atrás do "•••" ── */}
           {showMoreMenu && (
-          <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-1.5 text-[13px] shrink-0" style={{ color: theme.textMuted, transition: "color 0.3s ease" }}>
-            <span className="font-medium">
-              {readOnly ? "👁️ Visualização" : (editingNote ? "✏️ Editando" : "Nova nota")}
-              {isListening && (
-                <span className="ml-2 text-red-500 font-semibold animate-pulse">
-                  🎤 {activeFieldRef.current === "title" ? "Ditando no título" : "Ditando no conteúdo"}
-                </span>
-              )}
-            </span>
-            <div className="flex items-center gap-1 flex-wrap">
+          <div className="flex items-center justify-end gap-2 px-3 py-1 text-[13px] shrink-0 overflow-x-auto no-scrollbar" style={{ color: theme.textMuted, transition: "color 0.3s ease" }}>
+            {isListening && (
+              <span className="font-semibold text-red-500 animate-pulse whitespace-nowrap shrink-0">
+                🎤 {activeFieldRef.current === "title" ? "Ditando no título" : "Ditando no conteúdo"}
+              </span>
+            )}
+            <div className="flex items-center gap-1 shrink-0">
               {[14, 16, 20, 24, 30].map((size, i) => (
                 <button
                   key={size}
                   onClick={() => changeEditorFontSize(size)}
                   style={{
-                    width: 34, height: 34,
+                    width: 30, height: 30,
                     borderRadius: 8,
                     background: editorFontSize === size ? theme.borderAccent : "transparent",
                     border: `0.5px solid ${editorFontSize === size ? theme.borderAccent : theme.lines}`,
@@ -3987,42 +3984,42 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                 onClick={toggleHighContrast}
                 title="Alto contraste"
                 style={{
-                  width: 34, height: 34, borderRadius: 8, marginLeft: 4, flexShrink: 0,
+                  width: 30, height: 30, borderRadius: 8, marginLeft: 4, flexShrink: 0,
                   background: highContrast ? theme.borderAccent : "transparent",
                   border: `0.5px solid ${theme.lines}`,
                   color: highContrast ? (isDark ? "#1A1A2E" : "#fff") : theme.textMuted,
                   display: "flex", alignItems: "center", justifyContent: "center",
                 }}
               >
-                <Contrast size={19} />
+                <Contrast size={17} />
               </button>
 
               <button
                 onClick={toggleReadAloud}
                 title="Ouvir a nota em voz alta"
                 style={{
-                  width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                  width: 30, height: 30, borderRadius: 8, flexShrink: 0,
                   background: isSpeaking ? theme.borderAccent : "transparent",
                   border: `0.5px solid ${theme.lines}`,
                   color: isSpeaking ? (isDark ? "#1A1A2E" : "#fff") : theme.textMuted,
                   display: "flex", alignItems: "center", justifyContent: "center",
                 }}
               >
-                {isSpeaking ? <VolumeX size={19} /> : <Volume2 size={19} />}
+                {isSpeaking ? <VolumeX size={17} /> : <Volume2 size={17} />}
               </button>
 
               <button
                 onClick={() => setReadingMode(true)}
                 title="Modo de leitura simplificado"
                 style={{
-                  width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                  width: 30, height: 30, borderRadius: 8, flexShrink: 0,
                   background: "transparent",
                   border: `0.5px solid ${theme.lines}`,
                   color: theme.textMuted,
                   display: "flex", alignItems: "center", justifyContent: "center",
                 }}
               >
-                <BookOpen size={19} />
+                <BookOpen size={17} />
               </button>
 
               {isNative() && (
@@ -4030,14 +4027,14 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   onClick={cycleSelMenuPos}
                   title="Onde aparece o menu de copiar e recortar"
                   style={{
-                    height: 34, borderRadius: 8, marginLeft: 4, padding: "0 10px", flexShrink: 0,
+                    height: 30, borderRadius: 8, marginLeft: 4, padding: "0 8px", flexShrink: 0,
                     background: "transparent",
                     border: `0.5px solid ${theme.lines}`,
                     color: theme.textMuted,
                     fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
                   }}
                 >
-                  ✂️ Copiar: {selMenuPos === "top" ? "topo" : selMenuPos === "bottom" ? "rodapé" : "Android"}
+                  ✂️ {selMenuPos === "top" ? "topo" : selMenuPos === "bottom" ? "rodapé" : "Android"}
                 </button>
               )}
             </div>
