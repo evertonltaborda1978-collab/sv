@@ -3522,6 +3522,31 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     };
   }, [open]);
 
+  // Foto ampliada na frente da nota: enquanto ela estiver aberta, o botão/gesto de voltar do
+  // Android fecha SÓ a foto. O app guarda uma única tela "registrada" (a nota), então a foto
+  // toma o lugar dela e, ao fechar (por voltar, pelo X ou tocando na foto), devolve o lugar à nota.
+  const noteOpenRef = useRef(open);
+  noteOpenRef.current = open;
+  const photoViewerOpen = !!viewingImage;
+  useEffect(() => {
+    if (!open || !photoViewerOpen) return;
+    const w = window as any;
+    if (typeof w.__registerModal !== "function") return;
+    w.__registerModal("note-photo", () => {
+      setViewingImage(null);
+      setViewZoom(1);
+      setViewTx(0);
+      setViewTy(0);
+      setViewRotation(0);
+    });
+    return () => {
+      // a foto fechou, mas a nota continua aberta: o "voltar" volta a fechar a nota
+      if (noteOpenRef.current && typeof w.__registerModal === "function") {
+        w.__registerModal("note-editor", () => handleCloseRef.current());
+      }
+    };
+  }, [open, photoViewerOpen]);
+
   const plainText = blocksToPlainText(blocks);
   const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
   const charCount = plainText.length;
