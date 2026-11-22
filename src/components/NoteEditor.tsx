@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Note } from "@/hooks/useNotes";
 import { takeNativePhoto, isNative } from "@/lib/native";
 import { shareOrSaveImage, shareText } from "@/lib/nativeShare";
+import { enterImmersive, exitImmersive, setSelectionMenuHidden, readClipboardText } from "@/lib/uiTools";
 import {
   Camera,
   X,
@@ -125,6 +126,30 @@ const DARK_TEXT_COLOR_FIXES: Array<[string, string, string]> = [
   ["142, 36, 170", "#8e24aa", "#CE93D8"],
   ["84, 110, 122", "#546e7a", "#B0BEC5"],
 ];
+// Lê o texto selecionado dentro da nota (campos de texto ou blocos). canEdit = dá para recortar/colar ali.
+function readNoteSelection(): { text: string; canEdit: boolean } | null {
+  try {
+    const ae = document.activeElement as HTMLInputElement | null;
+    if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) {
+      if (!ae.closest("[data-note-dark]")) return null;
+      if (ae.selectionStart != null && ae.selectionEnd != null && ae.selectionStart !== ae.selectionEnd) {
+        return { text: ae.value.slice(ae.selectionStart, ae.selectionEnd), canEdit: !ae.readOnly && !ae.disabled };
+      }
+      return null;
+    }
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+    const anc = sel.getRangeAt(0).commonAncestorContainer;
+    const el = anc.nodeType === 1 ? (anc as Element) : anc.parentElement;
+    if (!el || !el.closest("[data-note-dark]")) return null;
+    const text = sel.toString();
+    if (!text.trim()) return null;
+    return { text, canEdit: !!el.closest('[contenteditable="true"], [contenteditable=""]') };
+  } catch {
+    return null;
+  }
+}
+
 const DARK_TEXT_COLOR_CSS = DARK_TEXT_COLOR_FIXES.map(([rgb, hex, light]) =>
   [".rich-text-editable", ".note-rich-view"]
     .map((c) => `[data-note-dark="true"] ${c} [style*="${rgb}"], [data-note-dark="true"] ${c} [style*="${hex}" i]`)
@@ -1248,6 +1273,14 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     try { return localStorage.getItem("nb_crop_on_add") === "1"; } catch { return false; }
   });
   const [addCrop, setAddCrop] = useState<{ dataUrl: string; index: number; total: number } | null>(null);
+  // Menu de Copiar/Recortar/Colar: o do Android (no meio do texto) é trocado por uma barra do app
+  // no topo ou no rodapé. "system" = volta a usar o menu do Android.
+  const [selMenuPos, setSelMenuPos] = useState<"top" | "bottom" | "system">(() => {
+    try { const v = localStorage.getItem("nb_sel_menu"); return v === "bottom" || v === "system" ? v : "top"; } catch { return "top"; }
+  });
+  const [selMenuNativeOk, setSelMenuNativeOk] = useState(false);
+  const [selBar, setSelBar] = useState<{ canEdit: boolean } | null>(null);
+  const [selBarMsg, setSelBarMsg] = useState<string | null>(null);
   const addCropQueueRef = useRef<{ files: File[]; i: number; results: File[] } | null>(null);
   const [pendingDeleteItem, setPendingDeleteItem] = useState<{ type: "table" | "checklist"; blockIdx: number; itemId: string; label: string } | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -3547,6 +3580,112 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     };
   }, [open, photoViewerOpen]);
 
+  // Foto ampliada: esconde o relógio e os botões do Android enquanto ela estiver aberta
+  useEffect(() => {
+    if (!photoViewerOpen) return;
+    enterImmersive();
+    return () => exitImmersive();
+  }, [photoViewerOpen]);
+
+  // Troca o menu do Android (Copiar/Recortar no meio do texto) pela barra do app, só enquanto a nota
+  // está aberta. Se o plugin nativo não responder (app sem a atualização nativa), a barra do app
+  // não aparece e o menu do Android continua como sempre foi.
+  useEffect(() => {
+    if (!open || !isNative() || selMenuPos === "system") { setSelMenuNativeOk(false); return; }
+    let cancelled = false;
+    setSelectionMenuHidden(true).then((ok) => { if (!cancelled) setSelMenuNativeOk(ok); });
+    return () => {
+      cancelled = true;
+      setSelMenuNativeOk(false);
+      void setSelectionMenuHidden(false);
+    };
+  }, [open, selMenuPos]);
+
+  // Mostra a barra quando existe texto selecionado na nota
+  useEffect(() => {
+    if (!open || !selMenuNativeOk) { setSelBar(null); return; }
+    let timer: number | undefined;
+    const compute = () => {
+      const cur = readNoteSelection();
+      setSelBar((prev) => (cur ? (prev && prev.canEdit === cur.canEdit ? prev : { canEdit: cur.canEdit }) : null));
+    };
+    const schedule = () => {
+      if (timer) window.clearTimeout(timer);
+      timer = window.setTimeout(compute, 120);
+    };
+    document.addEventListener("selectionchange", schedule);
+    return () => {
+      document.removeEventListener("selectionchange", schedule);
+      if (timer) window.clearTimeout(timer);
+      setSelBar(null);
+    };
+  }, [open, selMenuNativeOk]);
+
+  const cycleSelMenuPos = () => {
+    setSelMenuPos((cur) => {
+      const next = cur === "top" ? "bottom" : cur === "bottom" ? "system" : "top";
+      try { localStorage.setItem("nb_sel_menu", next); } catch {}
+      return next;
+    });
+  };
+
+  const collapseNoteSelection = () => {
+    try {
+      const ae = document.activeElement as HTMLInputElement | null;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && ae.selectionEnd != null) {
+        ae.setSelectionRange(ae.selectionEnd, ae.selectionEnd);
+        return;
+      }
+      window.getSelection()?.collapseToEnd();
+    } catch {}
+  };
+
+  const flashSelBar = (msg: string) => {
+    setSelBarMsg(msg);
+    window.setTimeout(() => { setSelBarMsg(null); collapseNoteSelection(); }, 900);
+  };
+
+  const runSelAction = async (kind: "copy" | "cut" | "paste" | "all" | "share") => {
+    if (kind === "paste") {
+      const text = await readClipboardText();
+      if (!text) { flashSelBar("Nada para colar"); return; }
+      try { document.execCommand("insertText", false, text); } catch {}
+      return;
+    }
+    if (kind === "all") {
+      const ae = document.activeElement as HTMLInputElement | null;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) { ae.select(); return; }
+      const sel = window.getSelection();
+      if (!sel) return;
+      const anchor = sel.anchorNode;
+      const el = anchor ? (anchor.nodeType === 1 ? (anchor as Element) : anchor.parentElement) : null;
+      const host = el?.closest('[contenteditable="true"], [contenteditable=""]') || selHostRef.current;
+      if (!host) return;
+      const range = document.createRange();
+      range.selectNodeContents(host);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return;
+    }
+    const cur = readNoteSelection();
+    if (!cur) return;
+    if (kind === "share") {
+      try { await shareText(title || "Nota", cur.text); } catch {}
+      collapseNoteSelection();
+      return;
+    }
+    let ok = false;
+    if (kind === "copy") {
+      try { ok = document.execCommand("copy"); } catch {}
+      if (!ok) { try { await navigator.clipboard.writeText(cur.text); ok = true; } catch {} }
+      flashSelBar(ok ? "✓ Copiado" : "Não consegui copiar");
+    } else {
+      try { ok = document.execCommand("cut"); } catch {}
+      if (!ok) { try { await navigator.clipboard.writeText(cur.text); document.execCommand("delete"); ok = true; } catch {} }
+      flashSelBar(ok ? "✓ Recortado" : "Não consegui recortar");
+    }
+  };
+
   const plainText = blocksToPlainText(blocks);
   const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
   const charCount = plainText.length;
@@ -3885,6 +4024,22 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
               >
                 <BookOpen size={19} />
               </button>
+
+              {isNative() && (
+                <button
+                  onClick={cycleSelMenuPos}
+                  title="Onde aparece o menu de copiar e recortar"
+                  style={{
+                    height: 34, borderRadius: 8, marginLeft: 4, padding: "0 10px", flexShrink: 0,
+                    background: "transparent",
+                    border: `0.5px solid ${theme.lines}`,
+                    color: theme.textMuted,
+                    fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+                  }}
+                >
+                  ✂️ Copiar: {selMenuPos === "top" ? "topo" : selMenuPos === "bottom" ? "rodapé" : "Android"}
+                </button>
+              )}
             </div>
           </div>
           )}
@@ -5525,6 +5680,53 @@ ${blocksToPlainText(blocks)}`.trim();
               }}
             />
           </AnnotatorErrorBoundary>
+        )}
+
+        {/* Barra de Copiar/Recortar/Colar (no topo ou no rodapé), no lugar do menu do Android */}
+        {selMenuNativeOk && (selBar || selBarMsg) && (
+          <div
+            className="absolute left-0 right-0 z-[85] flex justify-center px-2 pointer-events-none"
+            style={selMenuPos === "bottom" ? { bottom: "calc(env(safe-area-inset-bottom) + 6px)" } : { top: "calc(env(safe-area-inset-top) + 6px)" }}
+          >
+            <div
+              className="pointer-events-auto flex items-center gap-0.5 rounded-2xl px-1.5 py-1 overflow-x-auto"
+              style={{ background: isDark ? "#2B2B2B" : "#1F2937", boxShadow: "0 6px 20px rgba(0,0,0,0.35)", maxWidth: "100%" }}
+              onMouseDown={(e) => e.preventDefault()}
+            >
+              {selBarMsg ? (
+                <span className="px-3 py-2 text-[14px] font-semibold whitespace-nowrap" style={{ color: "#FFF" }}>{selBarMsg}</span>
+              ) : (
+                <>
+                  {([
+                    { k: "copy", label: "Copiar", show: true },
+                    { k: "cut", label: "Recortar", show: !!selBar?.canEdit },
+                    { k: "paste", label: "Colar", show: !!selBar?.canEdit },
+                    { k: "all", label: "Tudo", show: true },
+                    { k: "share", label: "Compartilhar", show: true },
+                  ] as const).filter((b) => b.show).map((b) => (
+                    <button
+                      key={b.k}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => { void runSelAction(b.k); }}
+                      className="px-3 py-2 rounded-xl text-[14px] font-semibold whitespace-nowrap active:scale-95 transition-all"
+                      style={{ color: "#FFF" }}
+                    >
+                      {b.label}
+                    </button>
+                  ))}
+                  <button
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={collapseNoteSelection}
+                    className="px-3 py-2 rounded-xl text-[14px] font-semibold active:scale-95 transition-all"
+                    style={{ color: "#BDBDBD" }}
+                    aria-label="Fechar"
+                  >
+                    ✕
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Confirmação antes de excluir um item da tabela ou checklist */}
