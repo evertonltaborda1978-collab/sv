@@ -218,6 +218,14 @@ function podarCopiasSemDono(lista: Note[], idsServidor: Set<string>, inicioDownl
   return lista.filter((n) => !n.sincronizado || idsServidor.has(n.id) || n.updatedAt.getTime() > corte);
 }
 
+// Nota "sem texto" na cópia daqui (o texto vazio, no formato de blocos, tem cerca de 30 caracteres).
+// Se uma nota JÁ SINCRONIZADA está assim na cópia do aparelho, mas o servidor tem texto da mesma
+// versão, o texto do servidor vale: antes essa nota ficava vazia na tela até limpar o cache,
+// porque o corpo só era baixado para notas novas ou mais novas no servidor.
+function corpoVazio(n: Note): boolean {
+  return (n.content || "").length <= 40 && (!n.images || n.images.length === 0);
+}
+
 function mapRow(n: any): Note {
   return {
     id: n.id,
@@ -755,7 +763,7 @@ export function useNotes() {
       const precisamCorpo = remoteBase
         .filter((r) => {
           const l = aqui.get(r.id);
-          return !l || (l.sincronizado && r.updatedAt.getTime() > l.updatedAt.getTime());
+          return !l || (l.sincronizado && (r.updatedAt.getTime() > l.updatedAt.getTime() || corpoVazio(l)));
         })
         .map((r) => r.id);
       const corpoPorId = new Map<string, { content: string; images: string[] }>();
@@ -777,6 +785,15 @@ export function useNotes() {
           lote.forEach((id) => semCorpo.add(id));
         }
       }
+      // Cópia daqui sem texto + servidor com texto da mesma versão: o texto do servidor entra na cópia.
+      const curar = new Map<string, string>();
+      precisamCorpo.forEach((id) => {
+        const l = aqui.get(id);
+        const c = corpoPorId.get(id);
+        if (l && l.sincronizado && corpoVazio(l) && c && c.content && c.content.length > (l.content || "").length) {
+          curar.set(id, c.content);
+        }
+      });
       const remoteNotes = remoteBase
         .filter((n) => !semCorpo.has(n.id) && (!precisamCorpo.includes(n.id) || corpoPorId.has(n.id)))
         .map((n) => (corpoPorId.has(n.id) ? { ...n, content: corpoPorId.get(n.id)!.content, images: corpoPorId.get(n.id)!.images } : n));
@@ -793,7 +810,10 @@ export function useNotes() {
       let mergedResult: Note[] = localNotes;
       let removidasDaCopia = 0;
       setNotesAndRef((prev) => {
-        const mesclado = mergeNotes(prev, remoteNotes);
+        const base = curar.size === 0
+          ? prev
+          : prev.map((n) => (curar.has(n.id) && n.sincronizado && corpoVazio(n) ? { ...n, content: curar.get(n.id)! } : n));
+        const mesclado = mergeNotes(base, remoteNotes);
         const novo = podarCopiasSemDono(mesclado, idsNoServidor, inicioDownload, totalNoServidor);
         removidasDaCopia = mesclado.length - novo.length;
         // Nada mudou? Mantém a MESMA lista (sem redesenhar a tela nem regravar o cache).
