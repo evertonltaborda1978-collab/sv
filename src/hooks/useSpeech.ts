@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { TextToSpeech, QueueStrategy } from "@capacitor-community/text-to-speech";
 import { prepareForSpeech, splitForSpeech } from "@/lib/noteText";
+import { startReadAloudService, stopReadAloudService } from "@/lib/uiTools";
 
 const LANG = "pt-BR";
 const RATE_KEY = "readalong_rate";
@@ -9,10 +10,11 @@ const RATE_KEY = "readalong_rate";
 /**
  * No Android (app instalado), quantos trechos são mandados de uma vez para o motor de voz
  * do celular. Com a tela bloqueada o app pode ficar "congelado" e não conseguir mandar o
- * próximo trecho a tempo; como o motor de voz já recebeu uma fila grande, ele continua
- * lendo sozinho. Conforme os trechos terminam, o app completa a fila.
+ * próximo trecho a tempo; como o motor de voz já recebeu a fila (praticamente a nota inteira),
+ * ele continua lendo sozinho. Antes eram só 60 trechos: acabavam depois de alguns minutos com
+ * a tela bloqueada e a voz parava.
  */
-const FILA_NATIVA = 60;
+const FILA_NATIVA = 500;
 
 /** Velocidades oferecidas na tela de leitura. */
 export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
@@ -170,6 +172,26 @@ export function useSpeech() {
 
   // Para a fala ao sair da tela.
   useEffect(() => stop, [stop]);
+
+  // Android (app instalado): enquanto a voz lê, mantém um serviço em primeiro plano (notificação
+  // fixa) para o Android não congelar nem fechar o app com a tela bloqueada. O tempo estimado de
+  // leitura (com folga) serve de trava: se algo der errado, o serviço se desliga sozinho.
+  useEffect(() => {
+    if (!native) return;
+    if (!speaking) {
+      stopReadAloudService();
+      return;
+    }
+    const chars = segsRef.current.reduce((sum, s) => sum + (s.prefix?.length ?? 0) + s.speak.length, 0);
+    const seconds = Math.ceil((chars / (14 * Math.max(0.5, rate))) * 1.5) + 180;
+    startReadAloudService(seconds);
+  }, [native, speaking, rate]);
+  useEffect(
+    () => () => {
+      if (native) stopReadAloudService();
+    },
+    [native]
+  );
 
   // Android (app instalado): o plugin avisa qual trecho está sendo falado.
   useEffect(() => {

@@ -7,6 +7,8 @@ type UiToolsType = {
   exitImmersive(): Promise<void>;
   setSelectionMenuHidden(o: { hidden: boolean }): Promise<void>;
   getClipboardText(): Promise<{ text: string }>;
+  startReadAloudService(o: { seconds: number }): Promise<void>;
+  stopReadAloudService(): Promise<void>;
 };
 
 const UiTools = registerPlugin<UiToolsType>("UiTools");
@@ -53,4 +55,16 @@ export async function readClipboardText(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+// Leitura em voz alta com a tela bloqueada: liga/desliga o serviço em primeiro plano do Android
+// (notificação fixa "Lendo a nota em voz alta"). "seconds" = quanto tempo a leitura deve durar.
+export function startReadAloudService(seconds: number): void {
+  if (!native()) return;
+  UiTools.startReadAloudService({ seconds: Math.round(seconds) }).catch(() => {});
+}
+
+export function stopReadAloudService(): void {
+  if (!native()) return;
+  UiTools.stopReadAloudService().catch(() => {});
 }
