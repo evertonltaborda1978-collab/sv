@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { X, Play, Pause, SkipBack, SkipForward, RotateCcw } from "lucide-react";
+import { X, Play, Pause, SkipBack, SkipForward, RotateCcw, Moon, Sun } from "lucide-react";
 import { SPEECH_RATES, useSpeech } from "@/hooks/useSpeech";
 import { wordIndexAt, type ReadDoc, type ReadSentence } from "@/lib/readAlong";
 
@@ -27,6 +27,8 @@ interface ReadAlongViewProps {
   /** frase em que a leitura começou (se > 0, mostra o aviso "continuando de onde parou") */
   resumedFrom: number;
   onClose: () => void;
+  /** troca entre modo claro e escuro (botão no painel de controles) */
+  onToggleDark?: () => void;
 }
 
 const ACCENT = "#2D9E7F";
@@ -92,6 +94,7 @@ export function ReadAlongView({
   fontSize,
   resumedFrom,
   onClose,
+  onToggleDark,
 }: ReadAlongViewProps) {
   const { sentences } = doc;
   const total = sentences.length;
@@ -99,6 +102,45 @@ export function ReadAlongView({
   const userScrollUntilRef = useRef(0);
   const [scrub, setScrub] = useState<number | null>(null);
   const [showResumed, setShowResumed] = useState(resumedFrom > 0);
+
+  // Painel de controles: pode "descer" e ficar só uma faixa fina embaixo (mais tela para o texto).
+  // Arrastar a alça para baixo recolhe; tocar ou puxar a faixa para cima mostra de novo.
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("nb_readalong_collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setCollapsedSaved = (v: boolean) => {
+    setCollapsed(v);
+    try {
+      localStorage.setItem("nb_readalong_collapsed", v ? "1" : "0");
+    } catch {
+      /* sem storage */
+    }
+  };
+  const dragY0Ref = useRef<number | null>(null);
+  const handleDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    dragY0Ref.current = e.clientY;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignora */
+    }
+  };
+  const handleUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const y0 = dragY0Ref.current;
+    dragY0Ref.current = null;
+    if (y0 === null) return;
+    const dy = e.clientY - y0;
+    const tap = Math.abs(dy) < 10;
+    if (collapsed) {
+      if (tap || dy < -24) setCollapsedSaved(false);
+    } else if (tap || dy > 24) {
+      setCollapsedSaved(true);
+    }
+  };
 
   const { jumpTo } = speech; // função estável: mantém as frases sem redesenhar à toa
   const pos = speech.position;
@@ -233,26 +275,40 @@ export function ReadAlongView({
       style={{ background: theme.bg }}
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Topo */}
+      {/* Topo — recolhe junto com o painel de controles */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateRows: collapsed ? "0fr" : "1fr",
+          transition: "grid-template-rows 0.22s ease",
+          paddingTop: collapsed ? "env(safe-area-inset-top)" : 0,
+          background: collapsed ? theme.bg : "transparent",
+          flexShrink: 0,
+        }}
+      >
+      <div style={{ overflow: "hidden", minHeight: 0 }}>
       <div
         style={{
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "12px 12px 10px 16px",
-          paddingTop: "calc(12px + env(safe-area-inset-top))",
+          padding: "4px 6px 4px 16px",
+          paddingTop: "calc(4px + env(safe-area-inset-top))",
           background: theme.headerBg,
           flexShrink: 0,
+          visibility: collapsed ? "hidden" : "visible",
         }}
       >
-        <span style={{ color: textColor, fontWeight: 700, fontSize: 15 }}>🔊 Ouvindo a nota</span>
+        <span style={{ color: textColor, fontWeight: 700, fontSize: 14 }}>🔊 Ouvindo a nota</span>
         <button
           onClick={handleClose}
           aria-label="Fechar leitura"
-          style={{ background: "none", border: "none", color: textColor, padding: 8, display: "flex" }}
+          style={{ background: "none", border: "none", color: textColor, padding: 6, display: "flex" }}
         >
-          <X size={24} />
+          <X size={22} />
         </button>
+      </div>
+      </div>
       </div>
 
       {showResumed && (
@@ -289,7 +345,7 @@ export function ReadAlongView({
       {/* Texto */}
       <div
         ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto px-5 py-5"
+        className="flex-1 min-h-0 overflow-y-auto px-5 py-3"
         style={{
           touchAction: "pan-y",
           WebkitOverflowScrolling: "touch",
@@ -360,13 +416,103 @@ export function ReadAlongView({
         style={{
           background: theme.toolbarBg,
           borderTop: `1px solid ${theme.lines}`,
-          padding: "10px 14px calc(10px + env(safe-area-inset-bottom))",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
+          paddingBottom: "env(safe-area-inset-bottom)",
           flexShrink: 0,
         }}
       >
+        {/* Alça: arraste para baixo para recolher; recolhido, toque ou puxe para cima para mostrar */}
+        <div
+          onPointerDown={handleDown}
+          onPointerUp={handleUp}
+          onPointerCancel={() => {
+            dragY0Ref.current = null;
+          }}
+          role="button"
+          aria-label={collapsed ? "Mostrar os controles" : "Recolher os controles"}
+          style={{
+            position: "relative",
+            height: collapsed ? 40 : 26,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            touchAction: "none",
+            cursor: "pointer",
+            transition: "height 0.2s ease",
+          }}
+        >
+          {collapsed && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                height: 2,
+                width: `${pct}%`,
+                background: ACCENT,
+              }}
+            />
+          )}
+          <div style={{ width: 40, height: 5, borderRadius: 999, background: theme.lines, opacity: 0.9 }} />
+          {collapsed && (
+            <>
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onClick={handlePlayPause}
+                aria-label={speech.speaking ? "Pausar" : "Ouvir"}
+                style={{
+                  position: "absolute",
+                  left: 12,
+                  width: 32,
+                  height: 32,
+                  borderRadius: "50%",
+                  background: ACCENT,
+                  border: "none",
+                  color: "#FFF",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {speech.speaking ? <Pause size={16} /> : <Play size={16} style={{ marginLeft: 2 }} />}
+              </button>
+              <span style={{ position: "absolute", right: 54, color: theme.textMuted, fontSize: 12 }}>{pct}%</span>
+              <button
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onClick={handleClose}
+                aria-label="Fechar leitura"
+                style={{
+                  position: "absolute",
+                  right: 8,
+                  width: 34,
+                  height: 34,
+                  borderRadius: "50%",
+                  background: "transparent",
+                  border: "none",
+                  color: textColor,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <X size={20} />
+              </button>
+            </>
+          )}
+        </div>
+
+        <div style={{ display: "grid", gridTemplateRows: collapsed ? "0fr" : "1fr", transition: "grid-template-rows 0.22s ease" }}>
+          <div style={{ overflow: "hidden", minHeight: 0 }}>
+            <div
+              style={{
+                padding: "0 14px 10px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                visibility: collapsed ? "hidden" : "visible",
+              }}
+            >
         {/* Progresso (arraste para pular para outro trecho) */}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <input
@@ -417,7 +563,18 @@ export function ReadAlongView({
           <button onClick={handleNext} aria-label="Próxima frase" style={roundBtn}>
             <SkipForward size={22} />
           </button>
-          <div style={{ width: 46, flexShrink: 0 }} />
+          {onToggleDark ? (
+            <button
+              onClick={onToggleDark}
+              aria-label={isDark ? "Modo claro" : "Modo escuro"}
+              title={isDark ? "Modo claro" : "Modo escuro"}
+              style={roundBtn}
+            >
+              {isDark ? <Sun size={20} /> : <Moon size={20} />}
+            </button>
+          ) : (
+            <div style={{ width: 46, flexShrink: 0 }} />
+          )}
         </div>
 
         {/* Velocidade */}
@@ -443,6 +600,9 @@ export function ReadAlongView({
               </button>
             );
           })}
+        </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
