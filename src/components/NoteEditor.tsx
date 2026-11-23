@@ -3688,6 +3688,63 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     }
   };
 
+  // Painel de cima que se esconde ao rolar: arrastar o dedo para cima (ler mais adiante) esconde o
+  // painel e dá mais tela ao texto; arrastar para baixo, ou voltar ao começo da nota, mostra de novo.
+  // Só reage ao toque/roda do usuário (não à rolagem automática de quem digita) e fica sempre visível
+  // com o menu ••• ou as cores abertos, ou ditando. Dá para desligar no menu •••.
+  const [autoHideTop, setAutoHideTop] = useState<boolean>(() => {
+    try { return localStorage.getItem("nb_auto_hide_top") !== "0"; } catch { return true; }
+  });
+  const [topHidden, setTopHidden] = useState(false);
+  const topHiddenRef = useRef(false);
+  topHiddenRef.current = topHidden;
+  const topBlockRef = useRef<HTMLDivElement | null>(null);
+  const topGestureRef = useRef({ y: 0, acc: 0, last: 0 });
+  const forceTopVisible = showMoreMenu || showColorPicker || isListening;
+  useEffect(() => {
+    if (!open || !autoHideTop || forceTopVisible) setTopHidden(false);
+  }, [open, autoHideTop, forceTopVisible, readOnly]);
+  const toggleAutoHideTop = () => {
+    setAutoHideTop((cur) => {
+      const next = !cur;
+      try { localStorage.setItem("nb_auto_hide_top", next ? "1" : "0"); } catch {}
+      return next;
+    });
+  };
+  const topScrollable = () => {
+    const el = scrollContainerRef.current;
+    const h = topBlockRef.current?.scrollHeight ?? 0;
+    // só esconde se a nota é comprida o bastante: senão o texto "pularia" ao esconder/mostrar
+    return !!el && el.scrollHeight - el.clientHeight > h + 80;
+  };
+  const setTop = (hide: boolean) => {
+    if (hide === topHiddenRef.current) return;
+    const now = Date.now();
+    if (now - topGestureRef.current.last < 350) return;
+    if (hide && (!autoHideTop || forceTopVisible || !topScrollable())) return;
+    topGestureRef.current.last = now;
+    setTopHidden(hide);
+  };
+  const onBodyTouchStart = (e: React.TouchEvent) => {
+    topGestureRef.current.y = e.touches[0].clientY;
+    topGestureRef.current.acc = 0;
+  };
+  const onBodyTouchMove = (e: React.TouchEvent) => {
+    const g = topGestureRef.current;
+    const y = e.touches[0].clientY;
+    const dy = y - g.y;
+    g.y = y;
+    g.acc = Math.sign(dy) === Math.sign(g.acc) ? g.acc + dy : dy;
+    const top = scrollContainerRef.current?.scrollTop ?? 0;
+    if (g.acc < -40 && top > 80) setTop(true);
+    else if (g.acc > 30 || top < 20) setTop(false);
+  };
+  const onBodyWheel = (e: React.WheelEvent) => {
+    const top = scrollContainerRef.current?.scrollTop ?? 0;
+    if (e.deltaY > 20 && top > 80) setTop(true);
+    else if (e.deltaY < -20 || top < 20) setTop(false);
+  };
+
   const plainText = blocksToPlainText(blocks);
   const wordCount = plainText.trim().split(/\s+/).filter(Boolean).length;
   const charCount = plainText.length;
@@ -3752,6 +3809,11 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
             </div>
           )}
 
+          {/* Espaço da barra de status quando o painel de cima está escondido */}
+          <div aria-hidden="true" style={{ height: topHidden ? "env(safe-area-inset-top)" : 0, background: theme.headerBg, flexShrink: 0, transition: "height 0.22s ease" }} />
+          {/* Painel de cima (cabeçalho + cores + menu •••): se esconde ao rolar a nota para baixo */}
+          <div className="shrink-0" style={{ display: "grid", gridTemplateRows: topHidden ? "0fr" : "1fr", transition: "grid-template-rows 0.22s ease" }}>
+          <div ref={topBlockRef} style={{ overflow: "hidden", minHeight: 0 }}>
           {/* ── HEADER (2 linhas em mobile p/ garantir todos os botões visíveis) ── */}
           <div
             className="shrink-0"
@@ -4039,13 +4101,31 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   ✂️ {selMenuPos === "top" ? "topo" : selMenuPos === "bottom" ? "rodapé" : "Android"}
                 </button>
               )}
+              <button
+                onClick={toggleAutoHideTop}
+                title="Esconder o painel de cima ao rolar a nota"
+                style={{
+                  height: 30, borderRadius: 8, marginLeft: 4, padding: "0 8px", flexShrink: 0,
+                  background: "transparent",
+                  border: `0.5px solid ${theme.lines}`,
+                  color: theme.textMuted,
+                  fontSize: 12, fontWeight: 700, whiteSpace: "nowrap",
+                }}
+              >
+                ↕ {autoHideTop ? "auto" : "fixo"}
+              </button>
             </div>
           </div>
           )}
+          </div>
+          </div>
 
           {/* ── LINED PAPER BODY ── */}
           <div
             ref={scrollContainerRef}
+            onTouchStart={onBodyTouchStart}
+            onTouchMove={onBodyTouchMove}
+            onWheel={onBodyWheel}
             className="flex-1 min-h-0 overflow-y-auto px-4"
             style={{
               background: `repeating-linear-gradient(to bottom, transparent, transparent 31px, ${theme.lines} 32px)`,
