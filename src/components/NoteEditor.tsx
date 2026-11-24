@@ -4387,7 +4387,9 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                     if (!block.content && !consistentHtml(block) && blocks.length > 1) return null;
                     return (
                       <div
-                        key={`text-${idx}`}
+                        // chave própria da visualização: se fosse igual à da edição, o React reaproveitaria o MESMO
+                        // elemento ao trocar de modo e o texto do editor ficava lá dentro, aparecendo duas vezes
+                        key={`text-view-${idx}`}
                         onClick={(e) => {
                           if (!editingNote) return;
                           // Capture tap position to place cursor there
@@ -4432,7 +4434,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                   }
                   return (
                     <div
-                      key={`text-${idx}`}
+                      key={`text-edit-${idx}`}
                       contentEditable
                       suppressContentEditableWarning
                       onInput={() => updateTextBlockRich(idx)}
