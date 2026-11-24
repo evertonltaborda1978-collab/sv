@@ -176,19 +176,34 @@ export function useSpeech() {
   // Android (app instalado): enquanto a voz lê, mantém um serviço em primeiro plano (notificação
   // fixa) para o Android não congelar nem fechar o app com a tela bloqueada. O tempo estimado de
   // leitura (com folga) serve de trava: se algo der errado, o serviço se desliga sozinho.
+  // O desligar espera um instante (e é cancelado se a voz voltar logo): tocar em pausar/tocar
+  // várias vezes seguidas não pode ligar e desligar o serviço em sequência.
+  const svcOnRef = useRef(false);
+  const svcTimerRef = useRef<number | undefined>(undefined);
   useEffect(() => {
     if (!native) return;
-    if (!speaking) {
-      stopReadAloudService();
+    if (svcTimerRef.current !== undefined) {
+      window.clearTimeout(svcTimerRef.current);
+      svcTimerRef.current = undefined;
+    }
+    if (speaking) {
+      const chars = segsRef.current.reduce((sum, s) => sum + (s.prefix?.length ?? 0) + s.speak.length, 0);
+      const seconds = Math.ceil((chars / (14 * Math.max(0.5, rate))) * 1.5) + 180;
+      startReadAloudService(seconds);
+      svcOnRef.current = true;
       return;
     }
-    const chars = segsRef.current.reduce((sum, s) => sum + (s.prefix?.length ?? 0) + s.speak.length, 0);
-    const seconds = Math.ceil((chars / (14 * Math.max(0.5, rate))) * 1.5) + 180;
-    startReadAloudService(seconds);
+    if (!svcOnRef.current) return; // nunca ligou: não há o que desligar
+    svcTimerRef.current = window.setTimeout(() => {
+      svcTimerRef.current = undefined;
+      svcOnRef.current = false;
+      stopReadAloudService();
+    }, 1500);
   }, [native, speaking, rate]);
   useEffect(
     () => () => {
-      if (native) stopReadAloudService();
+      if (svcTimerRef.current !== undefined) window.clearTimeout(svcTimerRef.current);
+      if (native && svcOnRef.current) stopReadAloudService();
     },
     [native]
   );
