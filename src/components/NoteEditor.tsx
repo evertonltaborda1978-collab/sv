@@ -44,6 +44,7 @@ import {
   AlignRight,
   Paintbrush,
   Crop,
+  Scan,
   Scissors,
   Contrast,
   Volume2,
@@ -545,7 +546,7 @@ interface NoteEditorProps {
 
 // ── ImageAnnotator: editor de desenho tipo Paint (caneta, seta, linha, ──
 // ── retângulo, círculo, texto, borracha de objeto, cores, zoom/lupa) ──
-type DrawTool = "pen" | "arrow" | "line" | "rect" | "circle" | "text" | "eraser" | "crop";
+type DrawTool = "pen" | "arrow" | "line" | "rect" | "circle" | "text" | "eraser" | "crop" | "straighten";
 
 type CropRect = { x: number; y: number; w: number; h: number };
 
@@ -638,6 +639,86 @@ function drawObjectOnCanvas(ctx: CanvasRenderingContext2D, obj: DrawObject) {
 }
 
 // Move um desenho junto com o corte (o corte muda a origem da foto)
+type QuadPt = { x: number; y: number };
+
+// Endireitar (corrigir perspectiva), como os apps de escanear documento: leva o quadrilátero escolhido
+// na foto (4 cantos, na ordem topo-esquerda, topo-direita, baixo-direita, baixo-esquerda) para um
+// retângulo reto. Mantém a resolução da foto (o tamanho final vem do tamanho dos lados escolhidos).
+function warpQuadToRect(src: CanvasImageSource, w: number, h: number, q: QuadPt[]): HTMLCanvasElement | null {
+  const [p0, p1, p2, p3] = q;
+  const dist = (a: QuadPt, b: QuadPt) => Math.hypot(a.x - b.x, a.y - b.y);
+  const outW = Math.max(16, Math.round(Math.max(dist(p0, p1), dist(p3, p2))));
+  const outH = Math.max(16, Math.round(Math.max(dist(p0, p3), dist(p1, p2))));
+
+  const sc = document.createElement("canvas");
+  sc.width = w;
+  sc.height = h;
+  const sctx = sc.getContext("2d");
+  if (!sctx) return null;
+  sctx.drawImage(src, 0, 0, w, h);
+  const sd = sctx.getImageData(0, 0, w, h).data;
+
+  // homografia do quadrado (u,v) em [0,1] para o quadrilátero
+  const dx1 = p1.x - p2.x, dx2 = p3.x - p2.x, dx3 = p0.x - p1.x + p2.x - p3.x;
+  const dy1 = p1.y - p2.y, dy2 = p3.y - p2.y, dy3 = p0.y - p1.y + p2.y - p3.y;
+  let g = 0, hh = 0;
+  if (Math.abs(dx3) > 1e-9 || Math.abs(dy3) > 1e-9) {
+    const den = dx1 * dy2 - dx2 * dy1;
+    if (Math.abs(den) < 1e-9) return null;
+    g = (dx3 * dy2 - dx2 * dy3) / den;
+    hh = (dx1 * dy3 - dx3 * dy1) / den;
+  }
+  const a = p1.x - p0.x + g * p1.x, b = p3.x - p0.x + hh * p3.x, c = p0.x;
+  const d = p1.y - p0.y + g * p1.y, e = p3.y - p0.y + hh * p3.y, f = p0.y;
+
+  const out = document.createElement("canvas");
+  out.width = outW;
+  out.height = outH;
+  const octx = out.getContext("2d");
+  if (!octx) return null;
+  const od = octx.createImageData(outW, outH);
+  const o = od.data;
+  for (let j = 0; j < outH; j++) {
+    const v = (j + 0.5) / outH;
+    for (let i = 0; i < outW; i++) {
+      const u = (i + 0.5) / outW;
+      const den = g * u + hh * v + 1;
+      const sx = (a * u + b * v + c) / den - 0.5;
+      const sy = (d * u + e * v + f) / den - 0.5;
+      let x0 = Math.floor(sx), y0 = Math.floor(sy);
+      const fx = sx - x0, fy = sy - y0;
+      let x1 = x0 + 1, y1 = y0 + 1;
+      x0 = x0 < 0 ? 0 : x0 > w - 1 ? w - 1 : x0;
+      x1 = x1 < 0 ? 0 : x1 > w - 1 ? w - 1 : x1;
+      y0 = y0 < 0 ? 0 : y0 > h - 1 ? h - 1 : y0;
+      y1 = y1 < 0 ? 0 : y1 > h - 1 ? h - 1 : y1;
+      const i00 = (y0 * w + x0) * 4, i10 = (y0 * w + x1) * 4, i01 = (y1 * w + x0) * 4, i11 = (y1 * w + x1) * 4;
+      const w00 = (1 - fx) * (1 - fy), w10 = fx * (1 - fy), w01 = (1 - fx) * fy, w11 = fx * fy;
+      const k = (j * outW + i) * 4;
+      o[k] = sd[i00] * w00 + sd[i10] * w10 + sd[i01] * w01 + sd[i11] * w11;
+      o[k + 1] = sd[i00 + 1] * w00 + sd[i10 + 1] * w10 + sd[i01 + 1] * w01 + sd[i11 + 1] * w11;
+      o[k + 2] = sd[i00 + 2] * w00 + sd[i10 + 2] * w10 + sd[i01 + 2] * w01 + sd[i11 + 2] * w11;
+      o[k + 3] = 255;
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+
+// os 4 cantos formam um quadrilátero convexo (sem cruzar)?
+function quadIsConvex(q: QuadPt[]): boolean {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-6) return false;
+    const sg = cross > 0 ? 1 : -1;
+    if (sign === 0) sign = sg;
+    else if (sg !== sign) return false;
+  }
+  return true;
+}
+
 function shiftDrawObject(obj: DrawObject, dx: number, dy: number): DrawObject {
   if (obj.type === "pen") return { ...obj, points: obj.points.map((pt) => ({ x: pt.x + dx, y: pt.y + dy })) };
   if (obj.type === "text") return { ...obj, x: obj.x + dx, y: obj.y + dy };
@@ -788,6 +869,66 @@ function ImageAnnotator({
     setCropHistory((hst) => hst.slice(0, -1));
   }
 
+  // ── Endireitar: 4 cantos para corrigir foto torta (perspectiva) ──
+  const [quad, setQuad] = useState<QuadPt[] | null>(null);
+  const [warping, setWarping] = useState(false);
+  const [warpError, setWarpError] = useState(false);
+  const quadDragRef = useRef<{ idx: number; startX: number; startY: number; pt: QuadPt } | null>(null);
+
+  useEffect(() => {
+    if (tool !== "straighten") { setQuad(null); setWarpError(false); return; }
+    const W = canvasSize.w, H = canvasSize.h;
+    setQuad((q) => q ?? [
+      { x: W * 0.08, y: H * 0.08 }, { x: W * 0.92, y: H * 0.08 },
+      { x: W * 0.92, y: H * 0.92 }, { x: W * 0.08, y: H * 0.92 },
+    ]);
+  }, [tool, canvasSize.w, canvasSize.h, ready]);
+
+  function startQuadDrag(e: React.PointerEvent, idx: number) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!quad) return;
+    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
+    quadDragRef.current = { idx, startX: e.clientX, startY: e.clientY, pt: { ...quad[idx] } };
+  }
+
+  function moveQuadDrag(e: React.PointerEvent) {
+    const d = quadDragRef.current;
+    if (!d || canvasBox.w === 0 || canvasBox.h === 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const W = canvasSize.w, H = canvasSize.h;
+    const x = Math.min(Math.max(0, d.pt.x + (e.clientX - d.startX) * (W / canvasBox.w)), W);
+    const y = Math.min(Math.max(0, d.pt.y + (e.clientY - d.startY) * (H / canvasBox.h)), H);
+    setQuad((q) => (q ? q.map((p, i) => (i === d.idx ? { x, y } : p)) : q));
+  }
+
+  function endQuadDrag() {
+    quadDragRef.current = null;
+  }
+
+  async function applyStraighten() {
+    const src = imgRef.current;
+    if (!src || !quad || warping || !quadIsConvex(quad)) return;
+    setWarpError(false);
+    setWarping(true);
+    await new Promise((r) => setTimeout(r, 40)); // deixa o aviso "Ajustando..." aparecer
+    try {
+      const out = warpQuadToRect(src, canvasSize.w, canvasSize.h, quad);
+      if (!out) throw new Error("sem resultado");
+      setCropHistory((hst) => [...hst, { img: src, size: { ...canvasSize }, objects }]);
+      imgRef.current = out;
+      setObjects([]); // os desenhos ficariam fora do lugar depois de endireitar
+      setCanvasSize({ w: out.width, h: out.height });
+      setZoom(1);
+      setTool("pen");
+    } catch {
+      setWarpError(true);
+    } finally {
+      setWarping(false);
+    }
+  }
+
   const [loadError, setLoadError] = useState(false);
 
   useEffect(() => {
@@ -850,7 +991,7 @@ function ImageAnnotator({
 
   function handlePointerDown(e: React.PointerEvent<HTMLCanvasElement>) {
     e.preventDefault();
-    if (tool === "crop") return; // no modo corte, quem mexe são as alças do retângulo
+    if (tool === "crop" || tool === "straighten") return; // nesses modos, quem mexe são as alças
     const p = getPoint(e);
 
     if (tool === "text") { setTextPrompt(p); return; }
@@ -997,6 +1138,7 @@ function ImageAnnotator({
 
   const TOOLS: { id: DrawTool; icon: JSX.Element; label: string }[] = [
     { id: "crop", icon: <Crop size={18} />, label: "Cortar" },
+    { id: "straighten", icon: <Scan size={18} />, label: "Endireitar (corrigir foto torta)" },
     { id: "pen", icon: <Paintbrush size={18} />, label: "Caneta" },
     { id: "arrow", icon: <ArrowUpRight size={18} />, label: "Seta" },
     { id: "line", icon: <Minus size={18} />, label: "Linha" },
@@ -1104,6 +1246,51 @@ function ImageAnnotator({
               </div>
             </>
           )}
+          {tool === "straighten" && quad && canvasBox.w > 0 && (
+            <>
+              <svg
+                viewBox={`0 0 ${canvasSize.w} ${canvasSize.h}`}
+                preserveAspectRatio="none"
+                style={{ position: "absolute", left: canvasBox.left, top: canvasBox.top, width: canvasBox.w, height: canvasBox.h, pointerEvents: "none" }}
+              >
+                <path
+                  d={`M0 0H${canvasSize.w}V${canvasSize.h}H0Z M${quad[0].x} ${quad[0].y}L${quad[1].x} ${quad[1].y}L${quad[2].x} ${quad[2].y}L${quad[3].x} ${quad[3].y}Z`}
+                  fill="rgba(0,0,0,0.55)"
+                  fillRule="evenodd"
+                />
+                <polygon
+                  points={quad.map((p) => `${p.x},${p.y}`).join(" ")}
+                  fill="none"
+                  stroke={quadIsConvex(quad) ? "#FFFFFF" : "#FF5252"}
+                  strokeWidth={2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+              <div style={{ position: "absolute", left: canvasBox.left, top: canvasBox.top, width: canvasBox.w, height: canvasBox.h, pointerEvents: "none" }}>
+                {quad.map((p, i) => (
+                  <div
+                    key={i}
+                    onPointerDown={(e) => startQuadDrag(e, i)}
+                    onPointerMove={moveQuadDrag}
+                    onPointerUp={endQuadDrag}
+                    onPointerCancel={endQuadDrag}
+                    style={{
+                      position: "absolute", left: `${(p.x / canvasSize.w) * 100}%`, top: `${(p.y / canvasSize.h) * 100}%`,
+                      width: 52, height: 52, marginLeft: -26, marginTop: -26,
+                      display: "flex", alignItems: "center", justifyContent: "center", touchAction: "none", pointerEvents: "auto",
+                    }}
+                  >
+                    <div style={{ width: 22, height: 22, borderRadius: "50%", background: "#2D9E7F", border: "3px solid #FFF", boxShadow: "0 0 0 1px rgba(0,0,0,0.5)" }} />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          {warping && (
+            <div style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.45)", color: "#FFF", fontWeight: 700, fontSize: 14, gap: 8 }}>
+              <Loader2 size={20} className="animate-spin" /> Ajustando a foto…
+            </div>
+          )}
           </>
         ) : (
           <Loader2 size={32} className="animate-spin text-white" />
@@ -1164,8 +1351,46 @@ function ImageAnnotator({
             >
               Foto inteira
             </button>
+            <button onClick={() => setTool("straighten")} style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}>
+              📐 Endireitar
+            </button>
             <button onClick={() => setTool("pen")} style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}>
               Sair do corte
+            </button>
+          </div>
+        )}
+
+        {/* Endireitar: 4 cantos sobre o documento/foto torta; o app deixa tudo reto */}
+        {tool === "straighten" && (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ width: "100%", textAlign: "center", color: warpError ? "#FF8A80" : "rgba(255,255,255,0.7)", fontSize: 11 }}>
+              {warpError
+                ? "Não consegui endireitar esta foto. Tente de novo ou use uma foto menor."
+                : quad && !quadIsConvex(quad)
+                  ? "Os cantos estão cruzados: arraste cada bolinha para o canto certo."
+                  : "Arraste as 4 bolinhas até os 4 cantos do documento (ou da parte da foto que quer reta)"}
+            </span>
+            <button
+              onClick={applyStraighten}
+              disabled={warping || !quad || !quadIsConvex(quad)}
+              style={{ padding: "8px 16px", borderRadius: 8, background: "#2D9E7F", color: "#FFF", border: "none", fontWeight: 700, fontSize: 13, opacity: warping || !quad || !quadIsConvex(quad) ? 0.5 : 1 }}
+            >
+              📐 Endireitar
+            </button>
+            <button
+              onClick={() => setQuad([
+                { x: canvasSize.w * 0.08, y: canvasSize.h * 0.08 }, { x: canvasSize.w * 0.92, y: canvasSize.h * 0.08 },
+                { x: canvasSize.w * 0.92, y: canvasSize.h * 0.92 }, { x: canvasSize.w * 0.08, y: canvasSize.h * 0.92 },
+              ])}
+              style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}
+            >
+              Cantos no começo
+            </button>
+            <button onClick={() => setTool("crop")} style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}>
+              ✂️ Cortar
+            </button>
+            <button onClick={() => setTool("pen")} style={{ padding: "8px 12px", borderRadius: 8, background: "#2E2E2E", color: "#FFF", border: "none", fontSize: 12, fontWeight: 600 }}>
+              Sair
             </button>
           </div>
         )}
