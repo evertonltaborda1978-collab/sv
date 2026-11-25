@@ -16,6 +16,14 @@ const RATE_KEY = "readalong_rate";
  */
 const FILA_NATIVA = 500;
 
+/**
+ * Os pedidos ao motor de voz do Android são atendidos um de cada vez. Mandar centenas de trechos de
+ * uma só vez deixava o "pausar" e o "tocar" esperando atrás de todos eles. Por isso os trechos vão
+ * em lotes pequenos, com uma pausa curta entre os lotes: o pausar passa na frente em menos de 1 segundo.
+ */
+const LOTE_ENVIO = 25;
+const PAUSA_ENTRE_LOTES_MS = 350;
+
 /** Velocidades oferecidas na tela de leitura. */
 export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
 
@@ -306,8 +314,12 @@ export function useSpeech() {
         startEstimator(myRun, p.index, p.startChar, p.prefixLen, p.text.length - p.prefixLen);
       };
 
+      let loteAgendado = false;
       const enfileirar = () => {
-        while (enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA) {
+        if (runRef.current !== myRun) return; // foi cancelada (pausar, trocar de trecho...)
+        let mandados = 0;
+        while (enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA && mandados < LOTE_ENVIO) {
+          mandados++;
           const n = enfileirados++;
           TextToSpeech.speak({
             text: plano[n].text,
@@ -337,6 +349,14 @@ export function useSpeech() {
               const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
               handleError(myRun, txt.includes("lang") || txt.includes("voice") ? "voice-unavailable" : "error");
             });
+        }
+        // Ainda falta mandar trechos? Continua no próximo lote, sem prender o motor de voz.
+        if (!loteAgendado && enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA) {
+          loteAgendado = true;
+          window.setTimeout(() => {
+            loteAgendado = false;
+            enfileirar();
+          }, PAUSA_ENTRE_LOTES_MS);
         }
       };
 
