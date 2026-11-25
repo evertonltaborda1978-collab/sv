@@ -24,6 +24,39 @@ const FILA_NATIVA = 500;
 const LOTE_ENVIO = 25;
 const PAUSA_ENTRE_LOTES_MS = 350;
 
+// "Modo antigo": fila curta de 60 trechos mandados de uma vez e sem o serviço em primeiro plano
+// (notificação), o jeito que funcionava antes da v5.67. É o padrão por enquanto, até o modo novo
+// (fila grande + notificação, para ler com a tela bloqueada) ficar confiável. Dá para desligar no
+// painel "diagnóstico" da leitura em voz alta, para testar o modo novo.
+const LEGACY_KEY = "nb_voice_legacy";
+export function getVoiceLegacy(): boolean {
+  try {
+    return localStorage.getItem(LEGACY_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+export function setVoiceLegacy(v: boolean): void {
+  try {
+    localStorage.setItem(LEGACY_KEY, v ? "1" : "0");
+  } catch {
+    /* sem storage */
+  }
+}
+
+// Diário curto do que a leitura em voz alta fez (mostrado no painel "diagnóstico"): ajuda a descobrir
+// se o toque chegou, se a voz do Android respondeu e em quanto tempo.
+const DBG: string[] = [];
+export function speechDbg(msg: string): void {
+  const d = new Date();
+  const p2 = (n: number, l = 2) => String(n).padStart(l, "0");
+  DBG.push(`${p2(d.getMinutes())}:${p2(d.getSeconds())}.${p2(d.getMilliseconds(), 3)} ${msg}`);
+  if (DBG.length > 80) DBG.shift();
+}
+export function speechDebugLog(): string[] {
+  return DBG.slice();
+}
+
 /** Velocidades oferecidas na tela de leitura. */
 export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
 
@@ -165,9 +198,13 @@ export function useSpeech() {
     runRef.current += 1;
     clearEstimator();
     if (isNative()) {
-      TextToSpeech.stop().catch(() => {
-        /* ignora */
-      });
+      const t0 = Date.now();
+      speechDbg("parar: pedindo stop() à voz do Android");
+      TextToSpeech.stop()
+        .then(() => speechDbg(`parar: stop() respondeu em ${Date.now() - t0} ms`))
+        .catch(() => {
+          speechDbg("parar: stop() deu erro");
+        });
     } else if (isWebSupported()) {
       try {
         window.speechSynthesis.cancel();
@@ -189,7 +226,7 @@ export function useSpeech() {
   const svcOnRef = useRef(false);
   const svcTimerRef = useRef<number | undefined>(undefined);
   useEffect(() => {
-    if (!native) return;
+    if (!native || getVoiceLegacy()) return;
     if (svcTimerRef.current !== undefined) {
       window.clearTimeout(svcTimerRef.current);
       svcTimerRef.current = undefined;
@@ -197,6 +234,7 @@ export function useSpeech() {
     if (speaking) {
       const chars = segsRef.current.reduce((sum, s) => sum + (s.prefix?.length ?? 0) + s.speak.length, 0);
       const seconds = Math.ceil((chars / (14 * Math.max(0.5, rate))) * 1.5) + 180;
+      speechDbg(`serviço: ligar (até ${seconds} s)`);
       startReadAloudService(seconds);
       svcOnRef.current = true;
       return;
@@ -205,6 +243,7 @@ export function useSpeech() {
     svcTimerRef.current = window.setTimeout(() => {
       svcTimerRef.current = undefined;
       svcOnRef.current = false;
+      speechDbg("serviço: desligar");
       stopReadAloudService();
     }, 1500);
   }, [native, speaking, rate]);
@@ -303,6 +342,10 @@ export function useSpeech() {
 
       let enfileirados = 0; // quantos já foram mandados ao motor de voz
       let concluidos = 0; // quantos o motor de voz já terminou de falar
+      const legacy = getVoiceLegacy();
+      const filaMax = legacy ? 60 : FILA_NATIVA;
+      const loteMax = legacy ? 60 : LOTE_ENVIO;
+      speechDbg(`leitura: ${plano.length} trechos, ${legacy ? "MODO ANTIGO (fila 60)" : `lotes de ${loteMax}, fila até ${filaMax}`}`);
 
       // Marca o trecho `n` do plano como o que está sendo falado agora.
       const apontar = (n: number) => {
@@ -318,7 +361,7 @@ export function useSpeech() {
       const enfileirar = () => {
         if (runRef.current !== myRun) return; // foi cancelada (pausar, trocar de trecho...)
         let mandados = 0;
-        while (enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA && mandados < LOTE_ENVIO) {
+        while (enfileirados < plano.length && enfileirados - concluidos < filaMax && mandados < loteMax) {
           mandados++;
           const n = enfileirados++;
           TextToSpeech.speak({
@@ -334,6 +377,7 @@ export function useSpeech() {
           })
             .then(() => {
               if (runRef.current !== myRun) return; // foi cancelada de propósito
+              if (n < 3) speechDbg(`trecho ${n} terminou de ser falado`);
               concluidos = Math.max(concluidos, n + 1);
               if (concluidos >= plano.length) {
                 clearEstimator();
@@ -347,11 +391,13 @@ export function useSpeech() {
             .catch((err) => {
               if (runRef.current !== myRun) return; // foi cancelada de propósito
               const txt = String((err as { message?: string })?.message ?? err).toLowerCase();
+              speechDbg(`ERRO no trecho ${n}: ${txt.slice(0, 80)}`);
               handleError(myRun, txt.includes("lang") || txt.includes("voice") ? "voice-unavailable" : "error");
             });
         }
+        if (mandados > 0) speechDbg(`mandei ${mandados} trechos à voz (total ${enfileirados} de ${plano.length})`);
         // Ainda falta mandar trechos? Continua no próximo lote, sem prender o motor de voz.
-        if (!loteAgendado && enfileirados < plano.length && enfileirados - concluidos < FILA_NATIVA) {
+        if (!loteAgendado && enfileirados < plano.length && enfileirados - concluidos < filaMax) {
           loteAgendado = true;
           window.setTimeout(() => {
             loteAgendado = false;
@@ -452,11 +498,14 @@ export function useSpeech() {
 
       if (native) {
         // Interrompe qualquer fala anterior antes de começar a nova.
+        const t0 = Date.now();
+        speechDbg(`começar no trecho ${index}: pedindo stop() antes`);
         TextToSpeech.stop()
           .catch(() => {
-            /* ignora */
+            speechDbg("começar: stop() deu erro");
           })
           .finally(() => {
+            speechDbg(`começar: stop() respondeu em ${Date.now() - t0} ms${runRef.current === myRun ? "" : " (pedido já substituído)"}`);
             if (runRef.current === myRun) runFrom(index, startChar, myRun);
           });
         return;

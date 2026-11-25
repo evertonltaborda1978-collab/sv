@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Play, Pause, SkipBack, SkipForward, RotateCcw, Moon, Sun } from "lucide-react";
-import { SPEECH_RATES, useSpeech } from "@/hooks/useSpeech";
+import { SPEECH_RATES, useSpeech, speechDbg, speechDebugLog, getVoiceLegacy, setVoiceLegacy } from "@/hooks/useSpeech";
+import { stopReadAloudService } from "@/lib/uiTools";
 import { wordIndexAt, type ReadDoc, type ReadSentence } from "@/lib/readAlong";
 
 type SpeechApi = ReturnType<typeof useSpeech>;
@@ -120,6 +121,30 @@ export function ReadAlongView({
       /* sem storage */
     }
   };
+  // Painel "diagnóstico": mostra o que a leitura fez (toque recebido, voz do Android respondeu em quantos ms...)
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diagLines, setDiagLines] = useState<string[]>([]);
+  const [diagCopied, setDiagCopied] = useState(false);
+  const [legacyVoice, setLegacyVoice] = useState<boolean>(() => getVoiceLegacy());
+  useEffect(() => {
+    if (!diagOpen) return;
+    const tick = () => setDiagLines(speechDebugLog());
+    tick();
+    const t = window.setInterval(tick, 500);
+    return () => window.clearInterval(t);
+  }, [diagOpen]);
+  const copyDiag = () => {
+    const text = speechDebugLog().join("\n");
+    const done = () => {
+      setDiagCopied(true);
+      window.setTimeout(() => setDiagCopied(false), 1500);
+    };
+    try {
+      navigator.clipboard.writeText(text).then(done, done);
+    } catch {
+      done();
+    }
+  };
   const dragY0Ref = useRef<number | null>(null);
   const handleDown = (e: React.PointerEvent<HTMLDivElement>) => {
     dragY0Ref.current = e.clientY;
@@ -222,6 +247,7 @@ export function ReadAlongView({
   };
 
   const handlePlayPause = () => {
+    speechDbg(`toque: ${speech.speaking ? "Pausar" : "Tocar"}`);
     userScrollUntilRef.current = 0;
     setShowResumed(false);
     if (speech.speaking) speech.stop();
@@ -229,6 +255,7 @@ export function ReadAlongView({
   };
 
   const handlePrev = () => {
+    speechDbg("toque: Retroceder");
     userScrollUntilRef.current = 0;
     // Já passou do começo da frase? Volta pro começo dela; senão, vai para a anterior.
     const target = activeWord > 2 ? activeIdx : activeIdx - 1;
@@ -236,6 +263,7 @@ export function ReadAlongView({
   };
 
   const handleNext = () => {
+    speechDbg("toque: Avançar");
     userScrollUntilRef.current = 0;
     speech.jumpTo(Math.min(total - 1, Math.max(0, activeIdx) + 1), 0, speech.speaking);
   };
@@ -601,10 +629,55 @@ export function ReadAlongView({
             );
           })}
         </div>
+              <button
+                onClick={() => setDiagOpen(true)}
+                style={{ alignSelf: "center", background: "none", border: "none", color: theme.textMuted, fontSize: 11, textDecoration: "underline", padding: "2px 8px" }}
+              >
+                diagnóstico
+              </button>
             </div>
           </div>
         </div>
       </div>
+
+      {diagOpen && (
+        <div
+          style={{
+            position: "absolute", left: 8, right: 8, bottom: 8, top: "34%", zIndex: 5,
+            background: "rgba(18,18,24,0.97)", color: "#D8D8E0", borderRadius: 12, padding: 10,
+            display: "flex", flexDirection: "column", gap: 8, boxShadow: "0 8px 30px rgba(0,0,0,0.5)",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <strong style={{ fontSize: 13 }}>Diagnóstico da leitura</strong>
+            <div style={{ display: "flex", gap: 6 }}>
+              <button onClick={copyDiag} style={{ background: "#2D9E7F", color: "#FFF", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700 }}>
+                {diagCopied ? "Copiado ✓" : "Copiar"}
+              </button>
+              <button onClick={() => setDiagOpen(false)} style={{ background: "#2E2E3A", color: "#FFF", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700 }}>
+                Fechar
+              </button>
+            </div>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={legacyVoice}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setLegacyVoice(v);
+                setVoiceLegacy(v);
+                if (v) stopReadAloudService();
+                speechDbg(`modo antigo ${v ? "LIGADO" : "desligado"}`);
+              }}
+            />
+            Modo antigo (recomendado por enquanto): fila curta e sem notificação. Desligue só para testar a leitura com a tela bloqueada (vale no próximo toque em tocar)
+          </label>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {diagLines.length === 0 ? "(nenhum evento ainda: toque em tocar/pausar/avançar e veja aparecer aqui)" : diagLines.join("\n")}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
