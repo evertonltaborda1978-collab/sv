@@ -44,6 +44,64 @@ export function setVoiceLegacy(v: boolean): void {
   }
 }
 
+// "Frases curtas" (padrão ligado): cada frase é dividida em pedaços menores, nas vírgulas e outras
+// pausas, antes de ir para a voz do Android. Algumas vozes não interrompem na hora: ao pausar, elas
+// terminam o trecho que já estão falando. Com pedaços curtos, esse "terminar" dura só 1 ou 2 segundos
+// em vez de uma frase inteira.
+const SHORT_KEY = "nb_voice_short";
+export function getVoiceShort(): boolean {
+  try {
+    return localStorage.getItem(SHORT_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+export function setVoiceShort(v: boolean): void {
+  try {
+    localStorage.setItem(SHORT_KEY, v ? "1" : "0");
+  } catch {
+    /* sem storage */
+  }
+}
+
+const PEDACO_MAX = 70;
+const PEDACO_MIN = 24;
+const PAUSAS = ",;:—–)";
+
+/** Divide o texto de uma frase em pedaços (com a posição de cada um dentro da frase). */
+export function partirParaFalar(body: string, curto: boolean): { off: number; text: string }[] {
+  if (!curto || body.length <= PEDACO_MAX) return [{ off: 0, text: body }];
+  const out: { off: number; text: string }[] = [];
+  let pos = 0;
+  while (pos < body.length) {
+    if (body.length - pos <= PEDACO_MAX) {
+      out.push({ off: pos, text: body.slice(pos) });
+      break;
+    }
+    let cut = -1;
+    for (let i = Math.min(pos + PEDACO_MAX, body.length - 1); i >= pos + PEDACO_MIN; i--) {
+      if (PAUSAS.includes(body[i])) {
+        cut = i + 1;
+        break;
+      }
+    }
+    if (cut === -1) {
+      for (let i = Math.min(pos + PEDACO_MAX, body.length - 1); i >= pos + PEDACO_MIN; i--) {
+        if (body[i] === " ") {
+          cut = i + 1;
+          break;
+        }
+      }
+    }
+    if (cut === -1) cut = pos + PEDACO_MAX;
+    out.push({ off: pos, text: body.slice(pos, cut) });
+    pos = cut;
+  }
+  return out;
+}
+
+let lastStopAt = 0; // quando o app pediu para parar a voz (para medir em quanto tempo a voz realmente parou)
+
 // Diário curto do que a leitura em voz alta fez (mostrado no painel "diagnóstico"): ajuda a descobrir
 // se o toque chegou, se a voz do Android respondeu e em quanto tempo.
 const DBG: string[] = [];
@@ -199,6 +257,7 @@ export function useSpeech() {
     clearEstimator();
     if (isNative()) {
       const t0 = Date.now();
+      lastStopAt = t0;
       speechDbg("parar: pedindo stop() à voz do Android");
       TextToSpeech.stop()
         .then(() => speechDbg(`parar: stop() respondeu em ${Date.now() - t0} ms`))
@@ -323,6 +382,7 @@ export function useSpeech() {
       if (runRef.current !== myRun) return;
       const segs = segsRef.current;
 
+      const curto = getVoiceShort();
       const plano: { index: number; startChar: number; prefixLen: number; text: string }[] = [];
       for (let i = index; i < segs.length; i++) {
         const sc = i === index ? startChar : 0;
@@ -330,7 +390,11 @@ export function useSpeech() {
         const body = seg.speak.slice(sc);
         if (!body.trim()) continue;
         const prefix = sc === 0 ? seg.prefix ?? "" : "";
-        plano.push({ index: i, startChar: sc, prefixLen: prefix.length, text: prefix + body });
+        partirParaFalar(body, curto).forEach((pd, k) => {
+          if (!pd.text.trim()) return;
+          const pre = k === 0 ? prefix : "";
+          plano.push({ index: i, startChar: sc + pd.off, prefixLen: pre.length, text: pre + pd.text });
+        });
       }
 
       if (plano.length === 0) {
@@ -345,7 +409,7 @@ export function useSpeech() {
       const legacy = getVoiceLegacy();
       const filaMax = legacy ? 60 : FILA_NATIVA;
       const loteMax = legacy ? 60 : LOTE_ENVIO;
-      speechDbg(`leitura: ${plano.length} trechos, ${legacy ? "MODO ANTIGO (fila 60)" : `lotes de ${loteMax}, fila até ${filaMax}`}`);
+      speechDbg(`leitura: ${plano.length} pedaços, ${curto ? "frases curtas" : "frases inteiras"}, ${legacy ? "MODO ANTIGO (fila 60)" : `lotes de ${loteMax}, fila até ${filaMax}`}`);
 
       // Marca o trecho `n` do plano como o que está sendo falado agora.
       const apontar = (n: number) => {
@@ -376,7 +440,11 @@ export function useSpeech() {
             queueStrategy: n === 0 ? QueueStrategy.Flush : QueueStrategy.Add,
           })
             .then(() => {
-              if (runRef.current !== myRun) return; // foi cancelada de propósito
+              if (runRef.current !== myRun) {
+                // foi cancelada de propósito
+                if (lastStopAt && Date.now() - lastStopAt < 20000) speechDbg(`voz encerrou o pedaço ${n} ${Date.now() - lastStopAt} ms depois do pedido de parar`);
+                return;
+              }
               if (n < 3) speechDbg(`trecho ${n} terminou de ser falado`);
               concluidos = Math.max(concluidos, n + 1);
               if (concluidos >= plano.length) {

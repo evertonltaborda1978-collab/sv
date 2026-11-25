@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Play, Pause, SkipBack, SkipForward, RotateCcw, Moon, Sun } from "lucide-react";
-import { SPEECH_RATES, useSpeech, speechDbg, speechDebugLog, getVoiceLegacy, setVoiceLegacy } from "@/hooks/useSpeech";
+import { SPEECH_RATES, useSpeech, speechDbg, speechDebugLog, getVoiceLegacy, setVoiceLegacy, getVoiceShort, setVoiceShort } from "@/hooks/useSpeech";
 import { stopReadAloudService } from "@/lib/uiTools";
 import { wordIndexAt, type ReadDoc, type ReadSentence } from "@/lib/readAlong";
 
@@ -126,6 +126,7 @@ export function ReadAlongView({
   const [diagLines, setDiagLines] = useState<string[]>([]);
   const [diagCopied, setDiagCopied] = useState(false);
   const [legacyVoice, setLegacyVoice] = useState<boolean>(() => getVoiceLegacy());
+  const [shortVoice, setShortVoice] = useState<boolean>(() => getVoiceShort());
   useEffect(() => {
     if (!diagOpen) return;
     const tick = () => setDiagLines(speechDebugLog());
@@ -672,6 +673,19 @@ export function ReadAlongView({
               }}
             />
             Modo antigo (recomendado por enquanto): fila curta e sem notificação. Desligue só para testar a leitura com a tela bloqueada (vale no próximo toque em tocar)
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={shortVoice}
+              onChange={(e) => {
+                const v = e.target.checked;
+                setShortVoice(v);
+                setVoiceShort(v);
+                speechDbg(`frases curtas ${v ? "LIGADO" : "desligado"}`);
+              }}
+            />
+            Frases curtas (pausar mais rápido; a voz pode soar um pouco mais picotada). Vale no próximo toque em tocar
           </label>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {diagLines.length === 0 ? "(nenhum evento ainda: toque em tocar/pausar/avançar e veja aparecer aqui)" : diagLines.join("\n")}
