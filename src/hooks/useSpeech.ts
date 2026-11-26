@@ -210,6 +210,14 @@ export function useSpeech() {
   const estTimerRef = useRef<number | null>(null);
   const uttRef = useRef<SpeechSynthesisUtterance | null>(null); // evita o Safari "esquecer" a fala
   const runFromRef = useRef<(index: number, startChar: number, myRun: number) => void>(() => {});
+  // Ponto de retomada depois de pausar: o app continua de onde parou, não do começo da frase.
+  const posRef = useRef<SpeechPosition | null>(null); // espelho de `position` (sempre o último)
+  const activeNRef = useRef(-1); // pedaço que estava sendo falado (no plano da leitura atual)
+  const pauseRef = useRef<{ run: number; index: number; startChar: number } | null>(null);
+
+  useEffect(() => {
+    posRef.current = position;
+  }, [position]);
 
   // Força o carregamento da lista de vozes no navegador (alguns aparelhos carregam tarde).
   useEffect(() => {
@@ -253,6 +261,10 @@ export function useSpeech() {
   );
 
   const stop = useCallback(() => {
+    // guarda onde a leitura estava (e de qual leitura), para o "tocar" continuar dali
+    pauseRef.current = posRef.current
+      ? { run: runRef.current, index: posRef.current.index, startChar: posRef.current.start }
+      : null;
     runRef.current += 1;
     clearEstimator();
     if (isNative()) {
@@ -414,6 +426,7 @@ export function useSpeech() {
       // Marca o trecho `n` do plano como o que está sendo falado agora.
       const apontar = (n: number) => {
         const p = plano[n];
+        activeNRef.current = n;
         indexRef.current = p.index;
         baseRef.current = p.startChar - p.prefixLen; // posição no motor + base = posição no texto mostrado
         boundarySeenRef.current = false;
@@ -442,7 +455,15 @@ export function useSpeech() {
             .then(() => {
               if (runRef.current !== myRun) {
                 // foi cancelada de propósito
-                if (lastStopAt && Date.now() - lastStopAt < 20000) speechDbg(`voz encerrou o pedaço ${n} ${Date.now() - lastStopAt} ms depois do pedido de parar`);
+                const depois = lastStopAt ? Date.now() - lastStopAt : -1;
+                if (depois >= 0 && depois < 20000) speechDbg(`voz encerrou o pedaço ${n} ${depois} ms depois do pedido de parar`);
+                // A voz não parou na hora e ainda falou o pedaço até o fim: o "tocar" continua do pedaço seguinte
+                // (senão repetiria o que você acabou de ouvir).
+                const pr = pauseRef.current;
+                if (pr && pr.run === myRun && n === activeNRef.current && depois > 500 && plano[n + 1]) {
+                  pauseRef.current = { run: myRun, index: plano[n + 1].index, startChar: plano[n + 1].startChar };
+                  speechDbg(`ao tocar, continua do pedaço ${n + 1}`);
+                }
                 return;
               }
               if (n < 3) speechDbg(`trecho ${n} terminou de ser falado`);
@@ -559,6 +580,7 @@ export function useSpeech() {
   const startAt = useCallback(
     (index: number, startChar: number) => {
       const myRun = ++runRef.current;
+      pauseRef.current = null;
       clearEstimator();
       setSpeaking(true);
       setFinished(false);
@@ -630,6 +652,7 @@ export function useSpeech() {
         startAt(idx, startChar);
       } else {
         stop();
+        pauseRef.current = null;
         setFinished(false);
         setPosition({ index: idx, start: startChar, end: startChar });
       }
@@ -641,6 +664,14 @@ export function useSpeech() {
   const resume = useCallback(() => {
     const segs = segsRef.current;
     if (segs.length === 0) return;
+    const pr = pauseRef.current;
+    if (!finished && pr && pr.index >= 0 && pr.index < segs.length) {
+      // continua de onde parou (da palavra ou do pedaço seguinte), não do começo da frase
+      const len = segs[pr.index].speak.length;
+      if (pr.startChar >= len && pr.index + 1 < segs.length) startAt(pr.index + 1, 0);
+      else startAt(pr.index, Math.max(0, Math.min(pr.startChar, len)));
+      return;
+    }
     const idx = finished ? 0 : Math.min(indexRef.current, segs.length - 1);
     startAt(idx, 0);
   }, [finished, startAt]);
@@ -655,8 +686,11 @@ export function useSpeech() {
       } catch {
         /* sem storage */
       }
-      // Se está falando, recomeça a frase atual já na nova velocidade.
-      if (speaking) startAt(indexRef.current, 0);
+      // Se está falando, continua da palavra atual já na nova velocidade.
+      if (speaking) {
+        const pos = posRef.current;
+        startAt(indexRef.current, pos && pos.index === indexRef.current ? pos.start : 0);
+      }
     },
     [speaking, startAt]
   );
