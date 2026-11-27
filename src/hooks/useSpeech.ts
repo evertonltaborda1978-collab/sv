@@ -115,6 +115,57 @@ export function speechDebugLog(): string[] {
   return DBG.slice();
 }
 
+/**
+ * Teste de pausa (botão "Testar pausa" do diagnóstico): fala uma frase longa de teste, pede para parar
+ * depois de 2 segundos e mede quanto tempo a voz do Android leva para realmente terminar. Mostra se o
+ * atraso do "pausar" vem da voz do aparelho (ela termina o trecho que já estava falando) ou do app.
+ */
+export async function runPauseTest(): Promise<string> {
+  if (!isNative()) return "O teste de pausa só funciona no aplicativo instalado.";
+  const texto =
+    "Este é um teste de pausa da leitura em voz alta. Estou falando uma frase longa de propósito, para medir quanto tempo a voz demora para parar depois do pedido.";
+  let tFim = 0;
+  const fim = TextToSpeech.speak({
+    text: texto,
+    lang: LANG,
+    rate: 1.0,
+    pitch: 1.0,
+    volume: 1.0,
+    category: "ambient",
+    queueStrategy: QueueStrategy.Flush,
+  }).then(
+    () => {
+      tFim = Date.now();
+    },
+    () => {
+      tFim = Date.now();
+    }
+  );
+  speechDbg("teste de pausa: falando a frase de teste");
+  await new Promise((r) => setTimeout(r, 2000));
+  const tPedido = Date.now();
+  let stopMs = -1;
+  try {
+    await TextToSpeech.stop();
+    stopMs = Date.now() - tPedido;
+  } catch {
+    /* ignora */
+  }
+  await Promise.race([fim, new Promise((r) => setTimeout(r, 15000))]);
+  const parou = tFim ? tFim - tPedido : -1;
+  const resumo =
+    parou < 0
+      ? "a voz não avisou que parou em 15 segundos"
+      : parou <= 700
+        ? "a voz parou na hora"
+        : parou <= 2500
+          ? "a voz demorou um pouco para parar"
+          : "a voz demorou muito: terminou o trecho que já estava falando";
+  const linha = `Teste de pausa: stop() respondeu em ${stopMs} ms; a voz parou ${parou < 0 ? "?" : parou} ms depois do pedido (${resumo})`;
+  speechDbg(linha);
+  return linha;
+}
+
 /** Velocidades oferecidas na tela de leitura. */
 export const SPEECH_RATES = [0.75, 1, 1.25, 1.5, 2];
 

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X, Play, Pause, SkipBack, SkipForward, RotateCcw, Moon, Sun } from "lucide-react";
-import { SPEECH_RATES, useSpeech, speechDbg, speechDebugLog, getVoiceLegacy, setVoiceLegacy, getVoiceShort, setVoiceShort } from "@/hooks/useSpeech";
+import { SPEECH_RATES, useSpeech, speechDbg, speechDebugLog, getVoiceLegacy, setVoiceLegacy, getVoiceShort, setVoiceShort, runPauseTest } from "@/hooks/useSpeech";
 import { stopReadAloudService } from "@/lib/uiTools";
 import { wordIndexAt, type ReadDoc, type ReadSentence } from "@/lib/readAlong";
 
@@ -127,6 +127,21 @@ export function ReadAlongView({
   const [diagCopied, setDiagCopied] = useState(false);
   const [legacyVoice, setLegacyVoice] = useState<boolean>(() => getVoiceLegacy());
   const [shortVoice, setShortVoice] = useState<boolean>(() => getVoiceShort());
+  const [pauseTest, setPauseTest] = useState<string | null>(null);
+  const [pauseTesting, setPauseTesting] = useState(false);
+  const doPauseTest = async () => {
+    if (pauseTesting) return;
+    speech.stop();
+    setPauseTesting(true);
+    setPauseTest("Falando uma frase de teste... (leva uns 5 segundos)");
+    try {
+      setPauseTest(await runPauseTest());
+    } catch {
+      setPauseTest("O teste de pausa deu erro.");
+    } finally {
+      setPauseTesting(false);
+    }
+  };
   useEffect(() => {
     if (!diagOpen) return;
     const tick = () => setDiagLines(speechDebugLog());
@@ -687,6 +702,16 @@ export function ReadAlongView({
             />
             Frases curtas (pausar mais rápido; a voz pode soar um pouco mais picotada). Vale no próximo toque em tocar
           </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <button
+              onClick={doPauseTest}
+              disabled={pauseTesting}
+              style={{ alignSelf: "flex-start", background: "#2E2E3A", color: "#FFF", border: "none", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 700, opacity: pauseTesting ? 0.6 : 1 }}
+            >
+              Testar pausa (fala uma frase de teste)
+            </button>
+            {pauseTest && <span style={{ fontSize: 12, color: "#FFD479" }}>{pauseTest}</span>}
+          </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", fontFamily: "monospace", fontSize: 11, lineHeight: 1.45, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {diagLines.length === 0 ? "(nenhum evento ainda: toque em tocar/pausar/avançar e veja aparecer aqui)" : diagLines.join("\n")}
           </div>
