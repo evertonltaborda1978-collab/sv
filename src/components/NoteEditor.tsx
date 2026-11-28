@@ -53,7 +53,6 @@ import {
   Calculator,
   MoreHorizontal,
   Delete as BackspaceIcon,
-  Keyboard,
   ChevronDown,
   ChevronUp,
   Maximize2,
@@ -463,6 +462,39 @@ function aplicarVirgulaAutomatica(texto: string): string {
   if (!digitos || /^0+$/.test(digitos)) return antes; // apagou até zerar: tira o número
   const cheio = digitos.replace(/^0+(?=\d)/, "").padStart(3, "0");
   return `${antes}${cheio.slice(0, -2)},${cheio.slice(-2)}`;
+}
+
+// Vírgula automática para o teclado do CELULAR (Gboard, teclado da Xiaomi etc.).
+// Esses teclados nem sempre avisam que o cursor está no fim do texto (o cursor "fica para trás" depois que o app
+// troca o texto por 0,02), e aí a vírgula automática não entrava. Aqui a posição do cursor não importa: compara o
+// texto de antes com o de agora, pega só os dígitos que foram digitados (ou apagados) no ÚLTIMO número da conta
+// e refaz os centavos pela direita. Devolve null quando não é um caso dele (aí vale a regra de sempre).
+function aplicarVirgulaPorDiferenca(anterior: string, novo: string): string | null {
+  const tokA = (anterior.match(/[\d.,]*$/) ?? [""])[0];
+  const base = anterior.slice(0, anterior.length - tokA.length);
+  const antesDoNumero = base.trimEnd().slice(-1);
+  if (antesDoNumero && !["+", "-", "−", "("].includes(antesDoNumero)) return null; // depois de × ÷ o número fica como digitado
+  if (!novo.startsWith(base)) return null; // mexeu em outra parte da conta
+  const tokN = novo.slice(base.length);
+  if (!/^[\d.,]*$/.test(tokN)) return null; // apareceu operador ou letra no fim
+  const dA = tokA.replace(/\D/g, "");
+  const dN = tokN.replace(/\D/g, "");
+  let digitos: string;
+  if (dN.length > dA.length) {
+    let p = 0;
+    while (p < dA.length && dA[p] === dN[p]) p++;
+    let q = 0;
+    while (q < dA.length - p && dA[dA.length - 1 - q] === dN[dN.length - 1 - q]) q++;
+    digitos = dA + dN.slice(p, dN.length - q); // dígito novo entra sempre pela direita
+  } else if (dN.length < dA.length) {
+    digitos = dA.slice(0, dN.length); // apagou: tira da direita
+  } else {
+    digitos = dN;
+  }
+  digitos = digitos.slice(0, 12);
+  if (!digitos || /^0+$/.test(digitos)) return base;
+  const cheio = digitos.replace(/^0+(?=\d)/, "").padStart(3, "0");
+  return `${base}${cheio.slice(0, -2)},${cheio.slice(-2)}`;
 }
 
 // Fora da edição do campo o valor aparece como R$ 100,49; ao tocar no campo volta o texto digitado.
@@ -2282,12 +2314,16 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
   const novoItemFocoRef = useRef<string | null>(null);
   const nomeRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const valorRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  // Vira true quando você toca no campo da conta para posicionar o cursor de propósito (aí a vírgula automática não mexe no meio)
+  const cursorTocadoRef = useRef(false);
   const [calcVirgulaAuto, setCalcVirgulaAuto] = useState<boolean>(() => {
     try { return localStorage.getItem("calc_virgula_auto") !== "0"; } catch { return true; }
   });
   // Teclado próprio do app (números e operações) no lugar do teclado do celular ao tocar no valor
   const [tecladoProprio, setTecladoProprio] = useState<boolean>(() => {
-    try { return localStorage.getItem("calc_teclado_proprio") !== "0"; } catch { return true; }
+    // Sempre o teclado do app: ignora a opção antiga "Teclado do celular" que ficou guardada no aparelho
+    try { localStorage.removeItem("calc_teclado_proprio"); } catch { /* sem storage */ }
+    return true;
   });
 
   useEffect(() => {
@@ -2394,6 +2430,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
     setCalcEditIdx(alvo);
     setCalcAoVivo(null);
     virgulaManualRef.current = false;
+    cursorTocadoRef.current = false;
     calcPrefillRef.current = inicial;
     setCalcExpr(inicial);
     setCalcRow({ blockIdx, itemId: item.id });
@@ -4860,7 +4897,22 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                 value={valorExibido}
                                 onChange={(e) => {
                                   // Digitar o valor direto apaga a conta antiga (some o histórico e os botões)
-                                  if (!readOnly) updateTableItem(idx, item.id, item.calc ? { valor: e.target.value, calc: undefined } : { valor: e.target.value });
+                                  if (readOnly) return;
+                                  let novoValor = e.target.value;
+                                  // Teclado do celular: vírgula automática também no valor digitado direto na linha (999 → 9,99)
+                                  if (calcVirgulaAuto && !tecladoProprio) {
+                                    const anteriorLimpo = (item.valor ?? "").replace(/R\$/gi, "").trim();
+                                    const novoLimpo = novoValor.replace(/R\$/gi, "").trim();
+                                    if (/^-?[\d.,]*$/.test(novoLimpo)) {
+                                      const auto = aplicarVirgulaPorDiferenca(anteriorLimpo, novoLimpo);
+                                      if (auto !== null) {
+                                        novoValor = auto;
+                                        const campo = e.target;
+                                        requestAnimationFrame(() => { try { campo.setSelectionRange(campo.value.length, campo.value.length); } catch { /* ignora */ } });
+                                      }
+                                    }
+                                  }
+                                  updateTableItem(idx, item.id, item.calc ? { valor: novoValor, calc: undefined } : { valor: novoValor });
                                 }}
                                 inputMode={tecladoProprio && !readOnly ? "none" : undefined}
                                 onFocus={(e) => {
@@ -4967,9 +5019,19 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                         const texto = e.target.value.replace(/\n/g, " ");
                                         // a vírgula automática só age quando você digita no fim da conta (não bagunça números do meio)
                                         const noFim = e.target.selectionStart === e.target.value.length;
-                                        setCalcExpr(calcVirgulaAuto && noFim ? aplicarVirgulaAutomatica(texto) : texto);
+                                        if (noFim) cursorTocadoRef.current = false;
+                                        // Teclado do celular: se o cursor não foi posicionado por você, o dígito entra sempre pela direita
+                                        const porDif = calcVirgulaAuto && !cursorTocadoRef.current ? aplicarVirgulaPorDiferenca(calcExprRef.current, texto) : null;
+                                        if (porDif !== null) {
+                                          calcCursorRef.current = porDif.length;
+                                          calcExprRef.current = porDif;
+                                          setCalcExpr(porDif);
+                                        } else {
+                                          setCalcExpr(calcVirgulaAuto && noFim ? aplicarVirgulaAutomatica(texto) : texto);
+                                        }
                                         if (calcError) setCalcError(null);
                                       }}
+                                      onPointerUp={() => { cursorTocadoRef.current = true; }}
                                       onKeyDown={(e) => {
                                         if (e.key === "Enter") { e.preventDefault(); confirmarCalcTabela(); }
                                         else if (e.key === "Escape") { e.preventDefault(); fecharCalcTabela(); }
@@ -5046,18 +5108,7 @@ export function NoteEditor({ open, onOpenChange, editingNote, readOnly = false, 
                                     )}
                                   </div>
                                   ) : (
-                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                                      <button
-                                        onMouseDown={(e) => e.preventDefault()}
-                                        onClick={() => alternarTeclado(false)}
-                                        aria-label="Usar o teclado do celular"
-                                        style={{
-                                          display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", borderRadius: 8,
-                                          fontSize: tFont * 0.75, fontWeight: 600, color: theme.textMuted, border: `1px solid ${theme.lines}`,
-                                        }}
-                                      >
-                                        <Keyboard size={14} /> Teclado do celular
-                                      </button>
+                                    <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
                                       {previaCalc !== null && (
                                         <div style={{ fontSize: tFont * 0.9, fontWeight: 600, color: theme.textMuted }}>
                                           = {formatarMoedaBRL(previaCalc)}
